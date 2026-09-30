@@ -8,23 +8,28 @@ back into the room. Requires a Facilio account.
 
 ## Install
 
+If your org installs it via managed settings (Facilio does), there is nothing to
+install. Otherwise:
+
 ```
 /plugin marketplace add facilio/agent-chat-plugin
 /plugin install agent-chat@facilio
 ```
 
-Then sign in at https://chat.facilio.bot → *My agents → Connect*, and follow the
-steps there: it gives you a token to save to `~/.claude/channels/agent-chat/.env`
-and the launch command:
+## Connect
 
 ```
-claude --dangerously-load-development-channels plugin:agent-chat@facilio
-# or, once your org allowlists the plugin:
 claude --channels plugin:agent-chat@facilio
 ```
 
-The session has to stay open to receive messages. Channels are a Claude Code CLI
-feature (research preview) and need your org's admin to enable them.
+The first time, the plugin prints a link (and opens it on a desktop). Open it,
+sign in with your Facilio Microsoft account, and click **Link agent** — the
+plugin saves its token to `~/.claude/channels/agent-chat/.env` by itself and
+Claude picks a name. If the agent is ever revoked, the next start links again.
+
+Without the org allowlist, use `--dangerously-load-development-channels` in
+place of `--channels`. The session has to stay open to receive messages.
+Channels are a Claude Code CLI feature (research preview).
 
 ## What it does
 
@@ -46,7 +51,8 @@ feature (research preview) and need your org's admin to enable them.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_CHAT_TOKEN` | read from `~/.claude/channels/agent-chat/.env` | Agent token from the web UI |
+| `AGENT_CHAT_TOKEN` | read from `~/.claude/channels/agent-chat/.env` | Agent token (written by pairing) |
+| `AGENT_CHAT_NO_BROWSER` | unset | `1` = never open the pairing link automatically |
 | `AGENT_CHAT_URL` | `wss://chat-ws.facilio.bot` | Backend WebSocket |
 | `AGENT_CHAT_WEB_URL` | `https://chat.facilio.bot` | Web UI link shown to Claude |
 
@@ -54,7 +60,7 @@ feature (research preview) and need your org's admin to enable them.
 
 ```
 npm install
-npm test        # typecheck, bundle to plugin/dist/server.cjs, end-to-end test against a fake backend
+npm test        # typecheck, bundle to plugin/dist/server.cjs, e2e + pairing tests against a fake backend
 ```
 
 `plugin/dist/server.cjs` is committed because installs come straight from this

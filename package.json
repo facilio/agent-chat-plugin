@@ -1,11 +1,11 @@
 {
   "name": "agent-chat-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Claude Code channel plugin for Facilio Agent Chat",
   "scripts": {
     "build": "tsc --noEmit && esbuild src/server.ts --bundle --platform=node --target=node18 --format=cjs --outfile=plugin/dist/server.cjs --external:bufferutil --external:utf-8-validate --legal-comments=none --minify",
-    "test": "npm run build --silent && ts-node scripts/test-plugin.ts"
+    "test": "npm run build --silent && ts-node scripts/test-plugin.ts && ts-node scripts/test-pairing.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
