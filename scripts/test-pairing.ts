@@ -70,7 +70,7 @@ async function main() {
   const shown = await a.next();
   assert.equal(shown.meta.status, 'pairing');
   assert.equal(shown.meta.url, 'https://chat.example/pair?code=KXWP-7QHM');
-  assert.match(shown.content, /open https:\/\/chat\.example\/pair\?code=KXWP-7QHM and click "Link agent" \(code KXWP-7QHM\)/);
+  assert.match(shown.content, /open https:\/\/chat\.example\/pair\?code=KXWP-7QHM and click "Link agent" — or enter code KXWP-7QHM at http:\/\/127\.0\.0\.1:\d+\./);
   assert.equal(typeof starts[0].hostname, 'string');
   for (let i = 0; i < 100 && !bearers.includes('Bearer ac_new_token'); i++) await new Promise((r) => setTimeout(r, 30));
   assert.ok(bearers.includes('Bearer ac_new_token'), 'connected with the claimed token');

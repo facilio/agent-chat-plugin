@@ -18,7 +18,7 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { PERMISSION_ID_RE, type AgentInfo, type ChatMessage, type RoomSummary, type ServerFrame } from './protocol';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const STATE_DIR = join(homedir(), '.claude', 'channels', 'agent-chat');
 const STATE_FILE = join(STATE_DIR, 'state.json');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';
@@ -473,7 +473,7 @@ async function startPairing(reason?: string) {
     const start = await postJson('/api/pair/start', { hostname: hostname(), platform: process.platform });
     if (start.status !== 201) throw new Error(`pairing unavailable (${start.status})`);
     const { code, secret, url, expiresAt } = start.data as { code: string; secret: string; url: string; expiresAt: number };
-    void emit(`${reason ? `${reason} ` : ''}To connect this Claude Code session to Agent Chat, open ${url} and click "Link agent" (code ${code}).`, { status: 'pairing', url, code });
+    void emit(`${reason ? `${reason} ` : ''}To connect this Claude Code session to Agent Chat, open ${url} and click "Link agent" — or enter code ${code} at ${WEB_URL}.`, { status: 'pairing', url, code });
     openBrowser(url);
     while (Date.now() < expiresAt) {
       await sleep(Number(process.env.AGENT_CHAT_PAIR_POLL_MS ?? 3000));
