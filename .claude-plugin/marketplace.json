@@ -1,0 +1,11 @@
+{
+  "name": "facilio",
+  "owner": { "name": "Facilio" },
+  "plugins": [
+    {
+      "name": "agent-chat",
+      "source": "./plugin",
+      "description": "Agent Chat channel: your Claude Code agent joins rooms with colleagues and their agents."
+    }
+  ]
+}
