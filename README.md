@@ -38,8 +38,10 @@ Channels are a Claude Code CLI feature (research preview).
 - **Colleagues' requests need the owner's OK.** When someone other than the owner asks for
   something that uses this machine or its tools, the agent calls `ask_owner`: the owner gets a
   private Allow/Decline card in the web UI, and the decision comes back as a channel event.
-- Wakes Claude only for messages addressed to it (see the backend's wake rules);
-  other room traffic is passed along as context the next time it is woken.
+- By default the agent follows every message in a room and decides for itself whether to reply
+  (each event says whether it was `addressed` to it; when it's just listening in, silence is the norm).
+  Its owner can switch a room to *@mentions only*; then other traffic is passed along as context
+  the next time it's woken.
 - Keeps per-room cursors in `~/.claude/channels/agent-chat/state.json` and
   replays anything missed after a reconnect.
 - **Stays passive outside the channel session.** Claude Code starts plugins in

@@ -32,11 +32,17 @@ export interface RoomSummary {
   members: Member[];
 }
 
+// How an agent follows a room: 'all' = woken for every message and decides for
+// itself whether to reply; 'mentions' = woken only when addressed. Owner-set,
+// per room. Missing means 'all' (the default).
+export type ListenMode = 'all' | 'mentions';
+
 export interface Member {
   kind: PrincipalKind;
   id: string;           // email or agentId
   name: string;
   ownerEmail?: string;  // agents only
+  listen?: ListenMode;  // agents only
 }
 
 export interface AgentInfo {
@@ -93,26 +99,35 @@ export function parseMentions(text: string): string[] {
   return [...out];
 }
 
+// Is this message addressed to the agent? A human message with no agent
+// @mentions is addressed to every agent; otherwise only the @mentioned ones.
+export function isAddressed(msg: ChatMessage, agentName: string | null, roomAgentNames: string[]): boolean {
+  if (!agentName) return false;
+  const mentions = (msg.mentions ?? []).filter((m) => roomAgentNames.includes(m));
+  if (msg.authorKind === 'user') return mentions.length === 0 || mentions.includes(agentName);
+  return mentions.includes(agentName);
+}
+
 // Who gets woken (i.e. gets a channel event that makes Claude take a turn).
-// Everyone in the room still RECEIVES every message; waking is what costs a
-// turn, so it is the thing we ration:
-//   - a human message wakes the agents it @mentions, or every agent if it
-//     mentions none;
-//   - an agent message wakes only the agents it @mentions;
-//   - nothing wakes its own author, and nothing wakes anyone once the room's
-//     consecutive-agent-message cap has tripped (a human message resets it).
-export function shouldWake(msg: ChatMessage, agent: { id: string; name: string | null }, roomAgentNames: string[]): boolean {
+// Everyone in the room still RECEIVES every message; waking costs a turn:
+//   - nothing wakes its own author, system messages wake nobody, and nothing
+//     wakes anyone once the room's consecutive-agent-message cap has tripped
+//     (a human message resets it);
+//   - listen 'all' (default): every other message wakes the agent, which then
+//     decides whether to reply (it's told whether it was addressed);
+//   - listen 'mentions': only messages addressed to it (see isAddressed).
+export function shouldWake(msg: ChatMessage, agent: { id: string; name: string | null; listen?: ListenMode }, roomAgentNames: string[]): boolean {
   if (!agent.name || msg.capped || msg.authorKind === 'system') return false;
   if (msg.authorKind === 'agent' && msg.authorId === agent.id) return false;
-  const mentions = (msg.mentions ?? []).filter((m) => roomAgentNames.includes(m));
-  if (msg.authorKind === 'user') return mentions.length === 0 || mentions.includes(agent.name);
-  return mentions.includes(agent.name);
+  if ((agent.listen ?? 'all') === 'all') return true;
+  return isAddressed(msg, agent.name, roomAgentNames);
 }
 
 // ---------------------------------------------------------------- WebSocket
 // client -> server (agents; browsers only send ping)
 export type ClientFrame =
-  | { action: 'hello'; reqId?: string; cursors?: Record<string, string> }
+  // features: what this plugin understands; 'listen' = it handles addressed=false (0.5.0+)
+  | { action: 'hello'; reqId?: string; cursors?: Record<string, string>; features?: string[] }
   | { action: 'register'; reqId?: string; name: string }
   | { action: 'send'; reqId?: string; roomId: string; text: string }
   | { action: 'rooms'; reqId?: string }
@@ -125,8 +140,8 @@ export type ClientFrame =
 
 // server -> client
 export type ServerFrame =
-  | { type: 'hello'; reqId?: string; agent: AgentInfo; rooms: RoomSummary[]; missed: Array<{ message: ChatMessage; wake: boolean }> }
-  | { type: 'message'; message: ChatMessage; wake?: boolean }
+  | { type: 'hello'; reqId?: string; agent: AgentInfo; rooms: RoomSummary[]; missed: Array<{ message: ChatMessage; wake: boolean; addressed?: boolean }> }
+  | { type: 'message'; message: ChatMessage; wake?: boolean; addressed?: boolean }
   | { type: 'room'; room: RoomSummary }
   | { type: 'room_removed'; roomId: string }
   | { type: 'agent'; agent: AgentInfo }

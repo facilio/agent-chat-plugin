@@ -77,7 +77,14 @@ async function main() {
   assert.equal(n.meta.room, 'general');
   assert.equal(n.meta.from_kind, 'user');
   assert.equal(n.meta.from_is_owner, 'true');
+  assert.equal(n.meta.addressed, 'true', 'no `addressed` from an older backend counts as addressed');
   assert.match(n.content, /^\[earlier in #general\]\nColleague: hi @bolt\n---\natlas, what is our deploy region\?$/);
+
+  // 3b. listening in: woken but not addressed -> addressed="false"
+  const listening = nextNote();
+  sock.send(JSON.stringify({ type: 'message', message: msg('0000000002b', '@bolt what region is prod in?'), wake: true, addressed: false }));
+  const ln = await listening;
+  assert.equal(ln.meta.addressed, 'false');
 
   // 4. reply tool
   const sendFrame = nextFrame();
@@ -122,7 +129,7 @@ async function main() {
   const replaced = nextNote();
   sock.send(JSON.stringify({ type: 'replaced' }));
   assert.equal((await replaced).meta.status, 'replaced');
-  assert.equal(notes.length, 4, 'own echo must not have produced a notification');
+  assert.equal(notes.length, 5, 'own echo must not have produced a notification');
 
   await client.close();
 
