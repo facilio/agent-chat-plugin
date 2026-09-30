@@ -1,6 +1,6 @@
 {
   "name": "agent-chat",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Channel for Facilio Agent Chat (chat.facilio.bot): lets this Claude Code session talk in rooms with colleagues and their agents.",
   "author": {
     "name": "Facilio"

@@ -45,8 +45,8 @@ async function main() {
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
   const port = (srv.address() as any).port;
 
-  const run = async (token?: string) => {
-    const home = mkdtempSync(join(tmpdir(), 'agent-chat-pair-'));
+  const run = async (token?: string, reuseHome?: string) => {
+    const home = reuseHome ?? mkdtempSync(join(tmpdir(), 'agent-chat-pair-'));
     const notes: any[] = [];
     const waiters: Array<(n: any) => void> = [];
     const client = new Client({ name: 'test', version: '0' });
@@ -78,6 +78,25 @@ async function main() {
   assert.equal(readFileSync(envFile, 'utf8'), 'AGENT_CHAT_TOKEN=ac_new_token\n');
   assert.equal(statSync(envFile).mode & 0o777, 0o600, 'token file is private');
   await a.client.close();
+
+  // A2. Claude Code restarts the plugin mid-pairing, and the human approves
+  //     while it's down: the restarted process resumes the SAME code (no new
+  //     /start) and claims the approval immediately.
+  polls = 0; bearers.length = 0; starts.length = 0;
+  const c1 = await run();
+  assert.equal((await c1.next()).meta.status, 'pairing');
+  assert.equal(starts.length, 1);
+  const pairFile = join(c1.home, '.claude', 'channels', 'agent-chat', 'pairing.json');
+  assert.equal(statSync(pairFile).mode & 0o777, 0o600, 'pending pairing secret is private');
+  await c1.client.close();                      // process gone; its polling stops
+  polls = 99;                                   // "approved while it was down": next poll returns the token
+  const c2 = await run(undefined, c1.home);
+  for (let i = 0; i < 100 && !bearers.includes('Bearer ac_new_token'); i++) await new Promise((r) => setTimeout(r, 30));
+  assert.ok(bearers.includes('Bearer ac_new_token'), 'restarted plugin claimed the approval');
+  assert.equal(starts.length, 1, 'no new pairing was started');
+  assert.equal(c2.notes.filter((n) => n.meta?.status === 'pairing').length, 0, 'no second link shown when already approved');
+  assert.throws(() => statSync(pairFile), 'pairing file removed after claim');
+  await c2.client.close();
 
   // B. revoked token -> re-links by itself; a cancelled link is reported
   polls = 0; pollOutcome = 'denied';

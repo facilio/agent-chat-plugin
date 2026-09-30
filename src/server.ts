@@ -13,12 +13,12 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import WebSocket from 'ws';
 import { z } from 'zod';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { PERMISSION_ID_RE, type AgentInfo, type ChatMessage, type RoomSummary, type ServerFrame } from './protocol';
 
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const STATE_DIR = join(homedir(), '.claude', 'channels', 'agent-chat');
 const STATE_FILE = join(STATE_DIR, 'state.json');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';
@@ -465,28 +465,66 @@ async function postJson(path: string, body: unknown): Promise<{ status: number; 
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
+// The pending pairing survives a restart of this process. Claude Code restarts
+// plugin servers (installs, auto-updates, /reload-plugins) — most often in the
+// very first minutes, exactly while someone is clicking "Link agent". Without
+// this, an approval that lands while we're down could never be claimed.
+type PendingPair = { code: string; secret: string; url: string; expiresAt: number };
+const PAIR_FILE = join(STATE_DIR, 'pairing.json');
+function loadPendingPair(): PendingPair | null {
+  try {
+    const p = JSON.parse(readFileSync(PAIR_FILE, 'utf8')) as PendingPair;
+    return p.expiresAt > Date.now() + 15_000 ? p : null;
+  } catch { return null; }
+}
+function savePendingPair(p: PendingPair) {
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(PAIR_FILE, JSON.stringify(p), { mode: 0o600 });
+}
+const clearPendingPair = () => { try { rmSync(PAIR_FILE, { force: true }); } catch { /* gone */ } };
+
 async function startPairing(reason?: string) {
   if (pairingActive) return;
   pairingActive = true;
   stopped = 'Waiting for you to open the Agent Chat link.';
   try {
-    const start = await postJson('/api/pair/start', { hostname: hostname(), platform: process.platform });
-    if (start.status !== 201) throw new Error(`pairing unavailable (${start.status})`);
-    const { code, secret, url, expiresAt } = start.data as { code: string; secret: string; url: string; expiresAt: number };
-    void emit(`${reason ? `${reason} ` : ''}To connect this Claude Code session to Agent Chat, open ${url} and click "Link agent" — or enter code ${code} at ${WEB_URL}.`, { status: 'pairing', url, code });
-    openBrowser(url);
+    let pending = reason ? null : loadPendingPair(); // a revoked agent always gets a fresh link
+    const resumed = !!pending;
+    if (!pending) {
+      clearPendingPair();
+      const start = await postJson('/api/pair/start', { hostname: hostname(), platform: process.platform });
+      if (start.status !== 201) throw new Error(`pairing unavailable (${start.status})`);
+      pending = start.data as PendingPair;
+      savePendingPair(pending);
+    }
+    const { code, secret, url, expiresAt } = pending;
+    let first = true;
+    let announced = false;
     while (Date.now() < expiresAt) {
-      await sleep(Number(process.env.AGENT_CHAT_PAIR_POLL_MS ?? 3000));
+      // Resuming: check straight away — the approval may already be waiting.
+      if (!(first && resumed)) await sleep(first ? 0 : Number(process.env.AGENT_CHAT_PAIR_POLL_MS ?? 3000));
+      first = false;
       let r: { status: number; data: any };
       try { r = await postJson('/api/pair/poll', { code, secret }); } catch { continue; } // offline blip: keep waiting
-      if (r.status === 202) continue;
+      if (r.status === 202) {
+        // Not approved yet: show the link (again, if this is a restarted
+        // process — same code, so an open approval page still works).
+        if (!announced) {
+          announced = true;
+          void emit(`${reason ? `${reason} ` : ''}To connect this Claude Code session to Agent Chat, open ${url} and click "Link agent" — or enter code ${code} at ${WEB_URL}.`, { status: 'pairing', url, code });
+          if (!resumed) openBrowser(url);
+        }
+        continue;
+      }
       if (r.status === 200 && typeof r.data.token === 'string') {
+        clearPendingPair();
         saveToken(r.data.token);
         stopped = null;
         log('linked');
         connect(r.data.token);
         return;
       }
+      if (r.status === 409 || r.status === 410) clearPendingPair();
       if (r.status === 409) { stopped = String(r.data.error); void emit(`${stopped}`, { status: 'pairing_failed' }); return; }
       if (r.status === 410) {
         stopped = r.data.error === 'denied' ? 'Linking was cancelled in the browser.' : 'The Agent Chat link expired.';
@@ -494,6 +532,7 @@ async function startPairing(reason?: string) {
         return;
       }
     }
+    clearPendingPair();
     stopped = 'The Agent Chat link expired.';
     void emit(`${stopped} Restart Claude Code with the channel to get a new link.`, { status: 'pairing_failed' });
   } catch (e) {
