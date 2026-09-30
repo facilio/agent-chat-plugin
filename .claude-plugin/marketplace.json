@@ -1,6 +1,9 @@
 {
   "name": "facilio",
-  "owner": { "name": "Facilio" },
+  "description": "Facilio plugins for Claude Code",
+  "owner": {
+    "name": "Facilio"
+  },
   "plugins": [
     {
       "name": "agent-chat",
