@@ -54,6 +54,24 @@ export interface AgentInfo {
 export const PERMISSION_ID_RE = /^[a-km-z]{5}$/;
 export type PermissionBehavior = 'allow' | 'deny';
 
+export type AskDecision = 'allow' | 'deny';
+
+export interface OwnerAsk {
+  askId: string;
+  agentId: string;
+  agentName: string;
+  roomId: string;
+  roomName: string;
+  messageId: string;
+  requesterName: string;  // who asked (from the room message, server-side)
+  requestText: string;    // what they wrote (clipped)
+  summary: string;        // what the agent intends to do — the agent's words, untrusted
+  createdAt: number;
+  expiresAt: number;
+  status: 'pending' | AskDecision | 'expired';
+  decidedBy?: string;
+}
+
 export interface PermissionRequest {
   agentId: string;
   agentName: string;
@@ -101,7 +119,9 @@ export type ClientFrame =
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }
   | { action: 'ping'; reqId?: string }
   // Claude Code asked this agent's session to approve a tool call (permission relay).
-  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string };
+  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string }
+  // A colleague asked this agent for something it won't do without its owner's OK.
+  | { action: 'ask_owner'; reqId?: string; roomId: string; messageId: string; summary: string };
 
 // server -> client
 export type ServerFrame =
@@ -118,4 +138,8 @@ export type ServerFrame =
   | { type: 'permission_request'; request: PermissionRequest }
   | { type: 'permission_resolved'; agentId: string; requestId: string; behavior: PermissionBehavior | 'expired' }
   // to the agent's own connection only, after the owner decided
-  | { type: 'permission_verdict'; requestId: string; behavior: PermissionBehavior };
+  | { type: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  // owner-approval of a colleague's request: card to the OWNER only, decision to the agent only
+  | { type: 'ask_request'; ask: OwnerAsk }
+  | { type: 'ask_resolved'; agentId: string; askId: string }
+  | { type: 'ask_decision'; ask: OwnerAsk };

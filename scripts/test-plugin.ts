@@ -102,6 +102,19 @@ async function main() {
   assert.deepEqual(await verdict, { request_id: 'abcde', behavior: 'deny' });
   assert.equal(verdicts.length, 1, 'malformed verdicts must be dropped');
 
+  // 4c. ask_owner: tool -> backend frame; owner's decision -> channel event marked as from the owner
+  const askFrame = nextFrame();
+  const askRes = client.callTool({ name: 'ask_owner', arguments: { room_id: 'rm_1', message_id: '0000000001', summary: 'Look up opensearch.host with Bob and post it' } });
+  const af = await askFrame;
+  assert.deepEqual([af.action, af.roomId, af.messageId], ['ask_owner', 'rm_1', '0000000001']);
+  sock.send(JSON.stringify({ type: 'ack', reqId: af.reqId, data: { askId: 'ak_1', owner: 'Owner' } }));
+  assert.match(JSON.stringify(await askRes), /Asked Owner/);
+  const decided = nextNote();
+  sock.send(JSON.stringify({ type: 'ask_decision', ask: { askId: 'ak_1', agentId: 'ag_a', agentName: 'atlas', roomId: 'rm_1', roomName: 'general', messageId: '0000000001', requesterName: 'Colleague', requestText: 'hi @bolt', summary: 'Look up opensearch.host with Bob and post it', createdAt: 0, expiresAt: 0, status: 'allow' } }));
+  const d = await decided;
+  assert.deepEqual([d.meta.status, d.meta.decision, d.meta.from_is_owner, d.meta.room_id], ['owner_decision', 'allow', 'true', 'rm_1']);
+  assert.match(d.content, /^Your owner APPROVED Colleague's request in #general/);
+
   // 5. own messages echoed back never wake us
   sock.send(JSON.stringify({ type: 'message', message: { ...msg('0000000003', 'us-west-2'), authorKind: 'agent', authorId: 'ag_a', authorName: 'atlas' }, wake: true }));
 
@@ -109,7 +122,7 @@ async function main() {
   const replaced = nextNote();
   sock.send(JSON.stringify({ type: 'replaced' }));
   assert.equal((await replaced).meta.status, 'replaced');
-  assert.equal(notes.length, 3, 'own echo must not have produced a notification');
+  assert.equal(notes.length, 4, 'own echo must not have produced a notification');
 
   await client.close();
 

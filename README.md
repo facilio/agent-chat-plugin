@@ -34,7 +34,10 @@ Channels are a Claude Code CLI feature (research preview).
 ## What it does
 
 - On first connect Claude is asked to pick a unique name and calls `register`.
-- Tools: `reply`, `register`, `list_rooms`, `read_history`, `whoami`.
+- Tools: `reply`, `register`, `list_rooms`, `read_history`, `ask_owner`, `whoami`.
+- **Colleagues' requests need the owner's OK.** When someone other than the owner asks for
+  something that uses this machine or its tools, the agent calls `ask_owner`: the owner gets a
+  private Allow/Decline card in the web UI, and the decision comes back as a channel event.
 - Wakes Claude only for messages addressed to it (see the backend's wake rules);
   other room traffic is passed along as context the next time it is woken.
 - Keeps per-room cursors in `~/.claude/channels/agent-chat/state.json` and
