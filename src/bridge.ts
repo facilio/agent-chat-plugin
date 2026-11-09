@@ -22,7 +22,7 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
 const STATE_DIR = process.env.AGENT_CHAT_STATE_DIR || join(homedir(), '.claude', 'channels', 'agent-chat');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';
@@ -141,6 +141,12 @@ let backoff = 1000;
 let reqSeq = 0;
 const pending = new Map<string, { resolve: (f: ServerFrame) => void; timer: NodeJS.Timeout }>();
 const verdictWaiters = new Map<string, Array<(behavior: string) => void>>();
+// Tool requests still waiting for an answer. The backend cancels a session's
+// requests when its connection drops; after a reconnect (a blip, not an exit)
+// we raise them again so the owner's web card comes back.
+const PENDING_TTL_MS = 10 * 60_000;
+const pendingPerms = new Map<string, { frame: Record<string, unknown>; at: number }>();
+const settle = (id: string) => { pendingPerms.delete(id); };
 const verdicts = new Map<string, string>();
 
 function request(frame: Record<string, unknown>, timeoutMs = 15000): Promise<ServerFrame> {
@@ -222,6 +228,10 @@ function connect(token: string) {
         }
         state = 'online';
         onIncoming(f.missed);
+        for (const [id, p] of pendingPerms) {
+          if (Date.now() - p.at > PENDING_TTL_MS) { pendingPerms.delete(id); continue; }
+          call(p.frame).catch(() => {});
+        }
         status();
         for (const w of onlineWaiters.splice(0)) w();
         break;
@@ -262,6 +272,7 @@ function connect(token: string) {
         // Only the backend can put frames on this authenticated socket, and it
         // only sends a verdict after checking the clicker owns this agent.
         if (f.behavior === 'allow' || f.behavior === 'deny') {
+          settle(f.requestId);
           verdicts.set(f.requestId, f.behavior);
           for (const w of verdictWaiters.get(f.requestId) ?? []) w(f.behavior);
           verdictWaiters.delete(f.requestId);
@@ -424,7 +435,9 @@ const routes: Record<string, Handler> = {
   'POST /ask_owner': async (b) => call({ action: 'ask_owner', roomId: String(b.roomId), messageId: String(b.messageId), summary: String(b.summary ?? '') }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {
-    await call({ action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash });
+    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash };
+    pendingPerms.set(String(b.requestId), { frame, at: Date.now() });
+    await call(frame);
     return { ok: true };
   },
   'POST /permission/wait': async (b) => {
@@ -444,6 +457,7 @@ const routes: Record<string, Handler> = {
   'POST /permission/answer': async (b) => {
     const id = String(b.requestId);
     const behavior = String(b.behavior);
+    settle(id);
     if (behavior === 'terminal') await call({ action: 'permission_cancel', requestId: id }).catch(() => {});
     else await call({ action: 'permission_answer', requestId: id, behavior, nonce: b.nonce }).catch(() => {});
     verdicts.set(id, behavior);
@@ -451,7 +465,7 @@ const routes: Record<string, Handler> = {
     verdictWaiters.delete(id);
     return { ok: true };
   },
-  'POST /permission/cancel': async (b) => call({ action: 'permission_cancel', requestId: b.requestId }).catch(() => ({ ok: false })),
+  'POST /permission/cancel': async (b) => { settle(String(b.requestId)); return call({ action: 'permission_cancel', requestId: b.requestId }).catch(() => ({ ok: false })); },
   'POST /shutdown': async () => { setTimeout(() => process.exit(0), 50); return { ok: true }; },
 };
 

@@ -1,6 +1,6 @@
 {
   "name": "agent-chat-plugin",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Claude Code plugin (hooks module + bridge) for Facilio Agent Chat",
   "scripts": {

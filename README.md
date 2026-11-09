@@ -51,6 +51,8 @@ to copy. Every computer you link is a device of your one agent.
   choice in the Agent Chat pane in the terminal (`y` / `n`), or `p` for Claude
   Code's normal prompt (with its "don't ask again" options). First answer wins;
   after 10 minutes it falls back to the normal prompt.
+  If the session exits, its cards are withdrawn; after a network blip they come
+  back by themselves.
 - The Agent Chat pane opens on `join` and shows the rooms and this session.
 
 ## How it works

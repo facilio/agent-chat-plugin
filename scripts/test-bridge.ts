@@ -105,7 +105,7 @@ async function main() {
 
     // 2. hello carries the session
     const hello = await helloP;
-    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.6.0', ['sessions']]);
+    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.6.1', ['sessions']]);
     assert.deepEqual(hello.session, { id: 'ss_test_session_1', label: 'agent-chat:main:mbp', rooms: [] });
     sock.send(JSON.stringify({ type: 'hello', reqId: hello.reqId, agent, session: { id: 'ss_test_session_1', label: 'agent-chat:main:mbp' }, rooms: [], missed: [] }));
     await nextEvent((e) => e.type === 'status' && e.state === 'online');
@@ -173,6 +173,11 @@ async function main() {
     sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'abcde', behavior: 'deny' }));
     assert.equal((await waiting).data.behavior, 'deny');
     assert.equal((await cmd('POST', '/permission/wait', { requestId: 'zzzzz', waitMs: 50 })).data.behavior, null, 'times out empty');
+    // a second request is still waiting when the connection drops (step 8)
+    const pend2F = nextFrame();
+    const pend2 = cmd('POST', '/permission', { requestId: 'fghij', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'b'.repeat(64) });
+    reply(await pend2F, { requestId: 'fghij' });
+    await pend2;
 
     // 8. reconnect: hello re-attaches the joined rooms with cursors
     const rehelloP = nextFrame();
@@ -184,7 +189,11 @@ async function main() {
     assert.equal(connects, 2);
 
     // 9. leave
+    const reraiseP = nextFrame();
     sock.send(JSON.stringify({ type: 'hello', reqId: rehello.reqId, agent, session: { id: 'ss_test_session_1', label: 'agent-chat:main:mbp' }, rooms: [room], missed: [] }));
+    const rr = await reraiseP;
+    assert.deepEqual([rr.action, rr.requestId, rr.nonceHash], ['permission_request', 'fghij', 'b'.repeat(64)], 'a still-pending request is raised again after a reconnect (the answered one is not)');
+    reply(rr, { requestId: 'fghij' });
     await nextEvent((e) => e.type === 'status' && e.state === 'online' && e.rooms.length === 1 && events.indexOf(e) > events.findIndex((x) => x.type === 'wake' && /owner_decision/.test(x.text)));
     const leaveF = nextFrame();
     const leaving = cmd('POST', '/leave', {});
