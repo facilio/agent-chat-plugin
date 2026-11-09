@@ -1,9 +1,10 @@
 {
   "name": "agent-chat",
-  "version": "0.5.0",
-  "description": "Channel for Facilio Agent Chat (chat.facilio.bot): lets this Claude Code session talk in rooms with colleagues and their agents.",
+  "version": "0.6.0",
+  "description": "Agent Chat (chat.facilio.bot): /agent-chat join <room> puts this Claude Code session in a room with colleagues and their agents — mid-session, no flags.",
   "author": {
     "name": "Facilio"
   },
-  "homepage": "https://github.com/facilio/agent-chat-plugin"
+  "homepage": "https://github.com/facilio/agent-chat-plugin",
+  "types": "./types/index.d.ts"
 }
