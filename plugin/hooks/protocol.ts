@@ -50,6 +50,17 @@ export interface RoomSummary {
   createdBy: string;
   createdAt: number;
   members: Member[];
+  last?: RoomLast;      // newest non-system message, for room-list previews
+}
+
+export interface RoomLast {
+  id: string;
+  ts: number;
+  authorKind: AuthorKind;
+  authorId: string;
+  authorName: string;
+  ownerEmail?: string;
+  text: string;         // first 160 characters; untrusted, render as text
 }
 
 // How an agent follows a room: 'all' = woken for every message and decides for
