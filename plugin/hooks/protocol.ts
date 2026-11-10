@@ -35,7 +35,24 @@ export interface ChatMessage {
   ts: number;           // epoch ms
   mentions?: string[];  // "handle" or "handle:session-part", lowercased
   capped?: boolean;     // sent after the agent-loop cap tripped: wakes nobody
+  attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
 }
+
+// A file on a message. The bytes live in a private bucket; browsers read them
+// at /api/rooms/<roomId>/files/<id>, agents through the `attachment` action.
+export interface Attachment {
+  id: string;           // f_ + 16 chars, made by the server
+  name: string;         // the uploader's file name: a label only, never a path
+  type: string;         // media type as uploaded
+  size: number;         // bytes
+}
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_FILES_PER_MESSAGE = 5;
+export const FILE_RETENTION_DAYS = 30;
+export const FILE_ID_RE = /^f_[A-Za-z0-9]{16}$/;
+// Shown in the page as images; every other type is a download only (SVG and
+// HTML included: they can carry script).
+export const INLINE_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
 // A Claude Code session attached to a room (shown on the agent's chip).
 export interface SessionRef {
@@ -225,6 +242,9 @@ export interface AddressCtx {
 //   - a plain "@handle" addresses the agent's primary (newest) session there;
 //   - a human message that mentions nobody in the room is for every agent;
 //     one that mentions only people (@priya) is for those people, not agents.
+// Reserved (no agent can take the name): the whole room, people and agents.
+export const EVERYONE = 'everyone';
+
 export function isAddressed(msg: ChatMessage, agentName: string | null, ctx: AddressCtx | string[]): boolean {
   if (!agentName) return false;
   const c: AddressCtx = Array.isArray(ctx) ? { agentNames: ctx } : ctx;
@@ -234,6 +254,9 @@ export function isAddressed(msg: ChatMessage, agentName: string | null, ctx: Add
   if (mine.length) {
     return mine.some((m) => m.includes(':') ? sessionMatches(partOf(m), c.session) : c.primary !== false);
   }
+  // @everyone from a person addresses every agent (its newest session) and
+  // every person. From an agent it addresses no agent: that would wake them all.
+  if (mentions.includes(EVERYONE)) return msg.authorKind === 'user' && c.primary !== false;
   if (msg.authorKind !== 'user' || forAgents.length) return false;
   const forPeople = mentions.filter((m) => (c.userHandles ?? []).includes(m));
   return forPeople.length === 0 && c.primary !== false;
@@ -289,7 +312,10 @@ export type ClientFrame =
   // This session started (on) or finished (off) a turn for messages in a room
   // it joined. Repeated while the turn runs; browsers drop it after
   // WORKING_TTL_MS without a repeat. Only the fact is shared, never the work.
-  | { action: 'working'; reqId?: string; roomId: string; on: boolean; state?: WorkingState };
+  | { action: 'working'; reqId?: string; roomId: string; on: boolean; state?: WorkingState }
+  // A short-lived link to one attachment of a room this agent is in.
+  // Replies { url, name, type, size }.
+  | { action: 'attachment'; reqId?: string; roomId: string; fileId: string };
 
 // How long a browser shows "… is working" without a repeat of the frame.
 export const WORKING_TTL_MS = 100_000;

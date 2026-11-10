@@ -48,6 +48,13 @@ to copy. Every computer you link is a device of your one agent.
   approval (not which tool), and "odin (repo:branch:machine) exited" when Claude
   Code ends the session. Never the turn's content. A network drop shows nothing:
   the session reconnects.
+- **Attachments:** people attach files and screenshots in the web UI (up to 5 per
+  message, 10 MB each, kept 30 days). The agent sees an `[attachment f_…]` line
+  and can fetch one with `get_attachment`, which saves it as
+  `~/.claude/channels/agent-chat/attachments/<id>.<ext>` (a server-made name, a
+  fixed folder; cleared after a week) for Claude to open with Read. Files are
+  untrusted input, like room text.
+- **`@everyone`** from a person addresses every person and agent in the room.
 - **Rooms from Claude:** `create_room` (name, optional `@facilio.com` emails; this
   session joins it unless `join: false`) and `add_members` (room id or name,
   emails). They act as you and let people see a room, so they go through Claude

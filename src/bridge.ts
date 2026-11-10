@@ -17,10 +17,10 @@
 import WebSocket from 'ws';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
-import { userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
+import { FILE_ID_RE, MAX_FILE_BYTES, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
 const VERSION = '0.6.1';
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
@@ -91,6 +91,12 @@ const who = (m: ChatMessage) => m.authorKind === 'agent'
   ? `@${m.authorName} (${m.ownerName}'s agent${m.session ? `, session ${m.session}` : ''})`
   : m.authorKind === 'user' ? `${m.authorName} (@${userHandle(m.authorId)})` : m.authorName;
 
+// A message's text plus a line per attached file. Files are untrusted input,
+// like the text: the agent fetches one with get_attachment only if it needs it.
+const size = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const withFiles = (m: ChatMessage) => [m.text, ...(m.attachments ?? []).map((f) =>
+  `[attachment ${f.id}: "${f.name.replace(/["\n]/g, '')}" (${f.type}, ${size(f.size)}), from ${m.authorName}: untrusted, fetch with get_attachment if needed]`)].filter(Boolean).join('\n');
+
 function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const roomName = rooms.get(roomId)?.name ?? roomId;
   const context = unseen.get(roomId) ?? [];
@@ -99,11 +105,11 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const lines: string[] = [];
   if (context.length) {
     lines.push(`[earlier in #${roomName}]`);
-    for (const m of context) lines.push(`${m.authorKind === 'system' ? '·' : who(m) + ':'} ${m.text}`);
+    for (const m of context) lines.push(`${m.authorKind === 'system' ? '·' : who(m) + ':'} ${withFiles(m)}`);
     lines.push('---');
   }
-  for (const m of woke.slice(0, -1)) lines.push(`${who(m)}: ${m.text}`);
-  lines.push(woke.length > 1 ? `${who(last)}: ${last.text}` : last.text);
+  for (const m of woke.slice(0, -1)) lines.push(`${who(m)}: ${withFiles(m)}`);
+  lines.push(woke.length > 1 ? `${who(last)}: ${withFiles(last)}` : withFiles(last));
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}" from="${attr(who(last))}" from_kind="${last.authorKind}" `
     + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}">`;
@@ -400,6 +406,11 @@ function start(freshLink = false) {
 // ------------------------------------------------------- command interface
 type Handler = (body: any, url: URL) => Promise<unknown>;
 const working = new Map<string, ReturnType<typeof setInterval>>();
+// Saved attachments keep a known extension (so Read shows images) or .bin.
+const EXT: Record<string, string> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'application/pdf': 'pdf',
+  'text/plain': 'txt', 'text/csv': 'csv', 'text/markdown': 'md', 'application/json': 'json', 'text/x-log': 'txt',
+};
 const routes: Record<string, Handler> = {
   'GET /status': async () => ({ state, message: stopped, me, session, rooms: [...joined].map((id) => ({ id, name: rooms.get(id)?.name ?? id })), pairing }),
   'POST /connect': async (b) => {
@@ -445,6 +456,26 @@ const routes: Record<string, Handler> = {
       beat(); working.set(roomId, setInterval(beat, 20000));
     } else if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: false }).catch(() => {});
     return { ok: true };
+  },
+  // Save one attachment where only this plugin writes: STATE_DIR/attachments/
+  // <server-made id>.<extension from a fixed list>. The uploader's file name is
+  // never used as a path. Downloads older than a week are cleared on the way.
+  'POST /attachment': async (b) => {
+    const fileId = String(b.fileId ?? '');
+    if (!FILE_ID_RE.test(fileId)) throw new Error('Not an attachment id (f_…)');
+    await whenOnline(b.waitMs ?? 20000);
+    const f = await call({ action: 'attachment', roomId: String(b.roomId ?? ''), fileId }) as { url: string; name: string; type: string; size: number };
+    const res = await fetch(f.url);
+    if (!res.ok) throw new Error(`download failed (${res.status})`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > MAX_FILE_BYTES) throw new Error('file is over 10 MB');
+    const dir = join(STATE_DIR, 'attachments');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const weekAgo = Date.now() - 7 * 86400_000;
+    for (const n of readdirSync(dir)) { try { if (statSync(join(dir, n)).mtimeMs < weekAgo) rmSync(join(dir, n)); } catch { /* raced */ } }
+    const path = join(dir, `${fileId}.${EXT[f.type] ?? 'bin'}`);
+    writeFileSync(path, bytes, { mode: 0o600 });
+    return { path, name: f.name, type: f.type, size: bytes.length };
   },
   'POST /create_room': async (b) => {
     await whenOnline(b.waitMs ?? 20000);
