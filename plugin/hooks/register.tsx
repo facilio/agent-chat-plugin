@@ -64,6 +64,14 @@ const wakes: string[] = []
 // Control. Only then do approvals go to the web: the person who typed the
 // request is right there for Claude Code's own prompt.
 let roomTurn = false
+// Rooms whose addressed messages are in the next / current turn: the web UI
+// shows "<agent> is working…" there until the reply or the turn's end.
+const wakeRooms = new Set<string>()
+const workingRooms = new Set<string>()
+const setWorking = ($: $, roomId: string, on: boolean) => {
+  if (on) workingRooms.add(roomId); else workingRooms.delete(roomId)
+  void bridgeCall($, 'POST', '/working', { roomId, on }).catch(() => {})
+}
 const listeners: Array<(ev: any) => void> = []
 let lastStatus: any = null
 const toolProblems: string[] = []
@@ -209,6 +217,7 @@ async function onEvent($: $, ev: any) {
     }
     case 'wake':
       wakes.push(ev.text)
+      if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
       return
   }
@@ -229,7 +238,9 @@ async function flushWakes($: $) {
   if (!s.rulesShown) await update($, chat, v => ({ ...v, rulesShown: true }))
   busy = true
   roomTurn = true
-  try { await $.prompt.submit({ text }) } catch (e) { busy = false; roomTurn = false; $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
+  for (const r of wakeRooms) setWorking($, r, true)
+  wakeRooms.clear()
+  try { await $.prompt.submit({ text }) } catch (e) { busy = false; roomTurn = false; for (const r of [...workingRooms]) setWorking($, r, false); $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
 }
 
 async function showStatus($: $) {
@@ -332,6 +343,7 @@ async function runTool($: $, name: string, args: any): Promise<string> {
   switch (name) {
     case 'reply': {
       const r = await bridgeCall($, 'POST', '/send', { roomId: String(args.room_id), text: String(args.text ?? '') })
+      if (workingRooms.has(String(args.room_id))) setWorking($, String(args.room_id), false)
       return r.capped ? 'sent — but agents in this room are paused (too many agent messages in a row); they wake again when a human speaks' : 'sent'
     }
     case 'list_rooms': {
@@ -669,6 +681,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       busy = false
       roomTurn = false
+      for (const r of [...workingRooms]) setWorking($, r, false)
       void flushWakes($)
       void maybeSummarize($).catch(() => {})
     }

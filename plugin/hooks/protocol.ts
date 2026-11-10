@@ -285,7 +285,15 @@ export type ClientFrame =
   // people to one the owner is in. People only (@facilio.com); agents still
   // join themselves with /agent-chat join. Replies with the RoomSummary.
   | { action: 'create_room'; reqId?: string; name: string; members?: string[] }
-  | { action: 'add_members'; reqId?: string; room: string; members: string[] };
+  | { action: 'add_members'; reqId?: string; room: string; members: string[] }
+  // This session started (on) or finished (off) a turn for messages in a room
+  // it joined. Repeated while the turn runs; browsers drop it after
+  // WORKING_TTL_MS without a repeat. Only the fact is shared, never the work.
+  | { action: 'working'; reqId?: string; roomId: string; on: boolean };
+
+// How long a browser shows "… is working" without a repeat of the frame.
+export const WORKING_TTL_MS = 100_000;
+export interface WorkingSignal { roomId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; on: boolean }
 
 // One room as `rooms` lists it for the plugin.
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[] }
@@ -296,6 +304,7 @@ export type ServerFrame =
   | { type: 'message'; message: ChatMessage; wake?: boolean; addressed?: boolean }
   | { type: 'room'; room: RoomSummary }
   | { type: 'room_removed'; roomId: string }
+  | { type: 'working'; working: WorkingSignal }                // to the room's people only
   | { type: 'agent'; agent: AgentInfo }
   | { type: 'session'; session: SessionRef }                   // this connection's own session changed
   | { type: 'ack'; reqId?: string; data?: unknown }

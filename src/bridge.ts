@@ -399,6 +399,7 @@ function start(freshLink = false) {
 
 // ------------------------------------------------------- command interface
 type Handler = (body: any, url: URL) => Promise<unknown>;
+const working = new Map<string, ReturnType<typeof setInterval>>();
 const routes: Record<string, Handler> = {
   'GET /status': async () => ({ state, message: stopped, me, session, rooms: [...joined].map((id) => ({ id, name: rooms.get(id)?.name ?? id })), pairing }),
   'POST /connect': async (b) => {
@@ -431,6 +432,18 @@ const routes: Record<string, Handler> = {
     const s = await call({ action: 'session', label: b.label, summary: b.summary }) as SessionRef;
     session = s; status();
     return s;
+  },
+  // "… is working" in the web UI while a turn for this room's messages runs:
+  // sent at once, repeated every 20 s, so a tab opened mid-turn soon sees it (browsers drop it after 100 s), and
+  // cleared on reply or at the turn's end. Best effort: never fails a turn.
+  'POST /working': async (b) => {
+    const roomId = String(b.roomId ?? '');
+    clearInterval(working.get(roomId)); working.delete(roomId);
+    if (b.on) {
+      const beat = () => { if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: true }).catch(() => {}); };
+      beat(); working.set(roomId, setInterval(beat, 20000));
+    } else if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: false }).catch(() => {});
+    return { ok: true };
   },
   'POST /create_room': async (b) => {
     await whenOnline(b.waitMs ?? 20000);
