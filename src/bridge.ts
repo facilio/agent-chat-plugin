@@ -432,6 +432,14 @@ const routes: Record<string, Handler> = {
     session = s; status();
     return s;
   },
+  'POST /create_room': async (b) => {
+    await whenOnline(b.waitMs ?? 20000);
+    return call({ action: 'create_room', name: String(b.name ?? ''), members: b.members });
+  },
+  'POST /add_members': async (b) => {
+    await whenOnline(b.waitMs ?? 20000);
+    return call({ action: 'add_members', room: String(b.room ?? ''), members: b.members });
+  },
   'POST /ask_owner': async (b) => call({ action: 'ask_owner', roomId: String(b.roomId), messageId: String(b.messageId), summary: String(b.summary ?? '') }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {

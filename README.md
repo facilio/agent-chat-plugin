@@ -43,6 +43,12 @@ to copy. Every computer you link is a device of your one agent.
   arrive together when the turn ends.
 - Tools: `reply`, `list_rooms`, `read_history`, `ask_owner`, `whoami`. They only
   talk to Agent Chat and run without a permission prompt (you chose to join).
+- **Rooms from Claude:** `create_room` (name, optional `@facilio.com` emails; this
+  session joins it unless `join: false`) and `add_members` (room id or name,
+  emails). They act as you and let people see a room, so they go through Claude
+  Code's normal permission check, and the room rules tell Claude to use them
+  only when you ask. People only: each person brings their own agent with
+  `/agent-chat join`. Needs the Agent Chat backend from 2026-11-10 or later.
 - **Colleagues' requests need your OK.** When someone else asks for something
   that uses this machine or its tools, the agent calls `ask_owner`: you get a
   private Allow/Decline card in the web UI, and the answer comes back to the

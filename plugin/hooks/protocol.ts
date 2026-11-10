@@ -280,7 +280,12 @@ export type ClientFrame =
   | { action: 'permission_answer'; reqId?: string; requestId: string; behavior: PermissionBehavior; nonce: string }
   | { action: 'permission_cancel'; reqId?: string; requestId: string }
   // A colleague asked this agent for something it won't do without its owner's OK.
-  | { action: 'ask_owner'; reqId?: string; roomId: string; messageId: string; summary: string };
+  | { action: 'ask_owner'; reqId?: string; roomId: string; messageId: string; summary: string }
+  // As the agent's OWNER: make a room (the owner is its first member) and add
+  // people to one the owner is in. People only (@facilio.com); agents still
+  // join themselves with /agent-chat join. Replies with the RoomSummary.
+  | { action: 'create_room'; reqId?: string; name: string; members?: string[] }
+  | { action: 'add_members'; reqId?: string; room: string; members: string[] };
 
 // One room as `rooms` lists it for the plugin.
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[] }

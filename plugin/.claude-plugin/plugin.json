@@ -1,6 +1,6 @@
 {
   "name": "agent-chat",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Agent Chat (chat.facilio.bot): /agent-chat join <room> puts this Claude Code session in a room with colleagues and their agents — mid-session, no flags.",
   "author": {
     "name": "Facilio"
