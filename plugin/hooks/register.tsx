@@ -45,11 +45,11 @@ const chat = atom({ plugin: 'agent-chat', key: 'chat' } as const, {
 } as ChatState, { shape: 'chat-1' })
 // The tool call waiting for an answer (drawn in the approval pane).
 const approval = atom({ plugin: 'agent-chat', key: 'approval' } as const, null as Approval | null, { shape: 'approval-1' })
-// The Agent Chat pane: opened by /agent-chat join (a pane the person asked
-// for is placed at any terminal width), it shows the rooms and this session,
-// and holds the approval card when a tool call is waiting for an answer.
+// The Agent Chat pane: only the approval card, open while a tool call that a
+// room message led to waits for an answer, and closed again once answered.
+// The rooms and label live in the status line. `/agent-chat pane off` (kept in
+// $.store as paneOff) never opens it.
 const PANE = 'agent-chat'
-const PANE_ROWS = 3
 const nonces = new Map<string, string>()
 
 // ------------------------------------------------------------------ bridge
@@ -59,6 +59,11 @@ let bridge: { socketPath: string; secret: string; stop: () => void } | null = nu
 let starting: Promise<void> | null = null
 let busy = false
 const wakes: string[] = []
+// Whether the current main turn was started by room messages (our own
+// $.prompt.submit) rather than by the person at the terminal or on Remote
+// Control. Only then do approvals go to the web: the person who typed the
+// request is right there for Claude Code's own prompt.
+let roomTurn = false
 const listeners: Array<(ev: any) => void> = []
 let lastStatus: any = null
 const toolProblems: string[] = []
@@ -223,7 +228,8 @@ async function flushWakes($: $) {
   const text = `${head}\n\n${wakes.splice(0).join('\n\n')}`
   if (!s.rulesShown) await update($, chat, v => ({ ...v, rulesShown: true }))
   busy = true
-  try { await $.prompt.submit({ text }) } catch (e) { busy = false; $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
+  roomTurn = true
+  try { await $.prompt.submit({ text }) } catch (e) { busy = false; roomTurn = false; $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
 }
 
 async function showStatus($: $) {
@@ -348,6 +354,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat label <text|auto>  how this session is shown (default repo:branch:machine)
   /agent-chat summary <on|off|text>  the one-line "working on" shown next to the label
   /agent-chat connect            link this computer again (new link)
+  /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
 Rooms are created at https://chat.facilio.bot.`
 
 async function versionError($: $): Promise<string | null> {
@@ -421,6 +428,7 @@ async function command($: $, args: string): Promise<string> {
         `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}`,
         `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
         `rooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}`,
+        `approvals: ${(await $.store.get('paneOff')) === true ? 'normal prompt only (pane off)' : 'web and pane, for requests a room message led to'}`,
         st.pairing ? `link: ${st.pairing.url} (code ${st.pairing.code})` : null,
         toolProblems.length ? `⚠ tools not registered (can't reply): ${toolProblems.join('; ')}` : null,
       ].filter(Boolean).join('\n')
@@ -461,6 +469,18 @@ async function command($: $, args: string): Promise<string> {
       if (bridge) await bridgeCall($, 'POST', '/session', { summary }).catch(() => {})
       return `Summary set: "${summary}" (won't auto-update; /agent-chat summary on to resume).`
     }
+    case 'pane': {
+      if (arg === 'off') {
+        await $.store.set('paneOff', true)
+        await $.ui.close({ id: PANE }).catch(() => {})
+        return 'Pane off (for all your sessions). Approvals use Claude Code\'s normal prompt here and are not sent to the web.'
+      }
+      if (arg === 'on') {
+        await $.store.set('paneOff', false)
+        return 'Pane on. When a room message leads to a tool call that needs your approval, it goes to the web and to a pane here; the first answer wins.'
+      }
+      return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane on|off)`
+    }
     default:
       return HELP
   }
@@ -491,7 +511,6 @@ export const register: Register = on => {
       if (/^Joined #/.test(text)) {
         const s = await read($, chat)
         await update($, chat, v => ({ ...v, rulesShown: true }))
-        await $.ui.open({ id: PANE, title: 'Agent Chat', rows: PANE_ROWS }).catch(() => {})
         return { text, context: [INSTRUCTIONS(s, lastStatus?.me?.ownerName?.split(' ')[0] ?? 'your owner')] }
       }
       return { text }
@@ -506,7 +525,8 @@ export const register: Register = on => {
 
   // 1. The session's owner chose to join the room, so posting there and
   //    reading it needs no extra prompt (only this plugin's own tools).
-  // 2. Tool approvals while the session is in a room: a call that would prompt
+  // 2. Tool approvals on a turn a room message started (one the person typed
+  //    keeps Claude Code's own prompt), unless `pane off`: a call that would prompt
   //    is held here; the owner gets an Allow/Deny card in the web UI (never in
   //    the room) and the same choice in a pane in this terminal, plus "use the
   //    normal prompt". First answer wins. (This is a tool.check hold rather than
@@ -519,7 +539,7 @@ export const register: Register = on => {
     if (verdict.decision !== 'ask' || verdict.plugin || e.approver !== 'person' || !e.tool_use_id) return verdict
     const s = await read($, chat)
     if (!bridge || !s.joined.length || lastStatus?.state !== 'online') return verdict
-    if ((await $.store.get('webApprovals')) === false) return verdict
+    if (!roomTurn || (await $.store.get('paneOff')) === true) return verdict
     const ids = 'abcdefghijkmnopqrstuvwxyz'
     const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
     const nonce = rand(16)
@@ -534,7 +554,7 @@ export const register: Register = on => {
     const done = async () => {
       nonces.delete(requestId)
       await update($, approval, () => null)
-      await $.ui.open({ id: PANE, title: 'Agent Chat', rows: PANE_ROWS }).catch(() => {})
+      await $.ui.close({ id: PANE }).catch(() => {})
     }
     // No room in this terminal for the pane: don't leave the person without a
     // local way to answer — withdraw the card and use the normal prompt.
@@ -600,6 +620,8 @@ export const register: Register = on => {
 
   // The person's own prompts feed the session summary; nothing else does.
   on('prompt.submit', async ($, e, next) => {
+    // A turn the person starts (or joins mid-turn) is theirs; ours are the wakes.
+    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') roomTurn = false
     if (e.origin.kind === 'composer' && !e.text.startsWith('/') && (await read($, chat)).joined.length) {
       await update($, chat, v => ({ ...v, prompts: [...v.prompts, e.text.slice(0, 400)].slice(-5), promptsSinceSummary: v.promptsSinceSummary + 1 }))
     }
@@ -614,6 +636,7 @@ export const register: Register = on => {
     const r = await next(e)
     if (e.agentId === undefined) {
       busy = false
+      roomTurn = false
       void flushWakes($)
       void maybeSummarize($).catch(() => {})
     }

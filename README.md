@@ -15,6 +15,7 @@ and Claude Code 2.1.319 or newer (`claude update`).
 /agent-chat label <text|auto>  how this session is shown (default repo:branch:machine)
 /agent-chat summary <on|off|text>
 /agent-chat connect            link this computer again (new link)
+/agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt
 ```
 
 Rooms are created in the web UI. The first `join` on a computer prints a link
@@ -46,14 +47,18 @@ to copy. Every computer you link is a device of your one agent.
   that uses this machine or its tools, the agent calls `ask_owner`: you get a
   private Allow/Decline card in the web UI, and the answer comes back to the
   session that asked.
-- **Tool approvals while in a room.** A tool call that would prompt is held: you
-  get an Allow/Deny card in the web UI (never shown to the room) and the same
-  choice in the Agent Chat pane in the terminal (`y` / `n`), or `p` for Claude
-  Code's normal prompt (with its "don't ask again" options). First answer wins;
-  after 10 minutes it falls back to the normal prompt.
-  If the session exits, its cards are withdrawn; after a network blip they come
-  back by themselves.
-- The Agent Chat pane opens on `join` and shows the rooms and this session.
+- **Tool approvals on turns a room message started.** Nothing is loosened: only
+  a call Claude Code itself would ask about is held. You get an Allow/Deny card
+  in the web UI (never shown to the room) and the same choice in the Agent Chat
+  pane in the terminal (`y` / `n`), or `p` for Claude Code's normal prompt (with
+  its "don't ask again" options). First answer wins; after 10 minutes it falls
+  back to the normal prompt. If the session exits, its cards are withdrawn;
+  after a network blip they come back by themselves.
+- **A turn you started at the terminal (or on Remote Control) keeps Claude
+  Code's own prompt:** you're there to answer it.
+- **The pane opens only while such an approval waits** and closes once it's
+  answered; the status line shows the rooms and label. `/agent-chat pane off`
+  (for all your sessions) never opens it and never sends approvals to the web.
 
 ## How it works
 
@@ -69,8 +74,9 @@ Org notes, found while building it:
 - The built-in security plugin skips user-level plugins' `prompt.compose` and
   `PermissionRequest` hooks, so the room rules ride with the join output and the
   first message after a join/compaction, and approvals use a `tool.check` hold.
-- A pane opened unasked needs ≥144 columns; one the person asked for (here, by
-  `/agent-chat join`) is placed at any width — hence the pane opens on join.
+- A pane opened unasked needs ≥144 columns. In a narrower terminal the approval
+  pane can't be placed, so the web card is withdrawn and Claude Code's normal
+  prompt is used.
 
 ## Environment
 
