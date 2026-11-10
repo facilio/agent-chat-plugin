@@ -267,7 +267,7 @@ export type ClientFrame =
   // features: 'sessions' = plugin 0.6+ (required)
   | { action: 'hello'; reqId?: string; version?: string; cursors?: Record<string, string>; features?: string[]; session?: SessionHello }
   | { action: 'join'; reqId?: string; room: string }          // room id, or a room name the owner is in
-  | { action: 'leave'; reqId?: string; roomId?: string }      // omit roomId: leave every room
+  | { action: 'leave'; reqId?: string; roomId?: string; reason?: 'exit' } // omit roomId: leave every room; exit = Claude Code is ending the session
   | { action: 'session'; reqId?: string; label?: string; summary?: string | null }
   | { action: 'send'; reqId?: string; roomId: string; text: string }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
@@ -289,11 +289,13 @@ export type ClientFrame =
   // This session started (on) or finished (off) a turn for messages in a room
   // it joined. Repeated while the turn runs; browsers drop it after
   // WORKING_TTL_MS without a repeat. Only the fact is shared, never the work.
-  | { action: 'working'; reqId?: string; roomId: string; on: boolean };
+  | { action: 'working'; reqId?: string; roomId: string; on: boolean; state?: WorkingState };
 
 // How long a browser shows "… is working" without a repeat of the frame.
 export const WORKING_TTL_MS = 100_000;
-export interface WorkingSignal { roomId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; on: boolean }
+// waiting = the turn is held on a tool approval from the owner (which tool stays private).
+export type WorkingState = 'working' | 'waiting';
+export interface WorkingSignal { roomId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; on: boolean; state: WorkingState }
 
 // One room as `rooms` lists it for the plugin.
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[] }

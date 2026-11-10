@@ -416,7 +416,7 @@ const routes: Record<string, Handler> = {
     return room;
   },
   'POST /leave': async (b) => {
-    const r = await call({ action: 'leave', roomId: b.roomId || undefined }) as { left: string[] };
+    const r = await call({ action: 'leave', roomId: b.roomId || undefined, reason: b.reason === 'exit' ? 'exit' : undefined }) as { left: string[] };
     for (const id of r.left) { joined.delete(id); unseen.delete(id); }
     status();
     return { left: r.left.map((id) => ({ id, name: rooms.get(id)?.name ?? id })) };
@@ -440,7 +440,8 @@ const routes: Record<string, Handler> = {
     const roomId = String(b.roomId ?? '');
     clearInterval(working.get(roomId)); working.delete(roomId);
     if (b.on) {
-      const beat = () => { if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: true }).catch(() => {}); };
+      const st = b.state === 'waiting' ? 'waiting' as const : 'working' as const;
+      const beat = () => { if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: true, state: st }).catch(() => {}); };
       beat(); working.set(roomId, setInterval(beat, 20000));
     } else if (state === 'online' && joined.has(roomId)) void call({ action: 'working', roomId, on: false }).catch(() => {});
     return { ok: true };

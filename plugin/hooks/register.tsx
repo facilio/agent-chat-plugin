@@ -68,9 +68,9 @@ let roomTurn = false
 // shows "<agent> is working…" there until the reply or the turn's end.
 const wakeRooms = new Set<string>()
 const workingRooms = new Set<string>()
-const setWorking = ($: $, roomId: string, on: boolean) => {
+const setWorking = ($: $, roomId: string, on: boolean, state: 'working' | 'waiting' = 'working') => {
   if (on) workingRooms.add(roomId); else workingRooms.delete(roomId)
-  void bridgeCall($, 'POST', '/working', { roomId, on }).catch(() => {})
+  void bridgeCall($, 'POST', '/working', { roomId, on, state }).catch(() => {})
 }
 const listeners: Array<(ev: any) => void> = []
 let lastStatus: any = null
@@ -595,7 +595,11 @@ export const register: Register = on => {
     nonces.set(requestId, nonce)
     await update($, approval, () => ({ requestId, tool: e.tool, description, preview: preview.slice(0, 600) }))
     const placed = await $.ui.open({ id: PANE, title: 'Agent Chat · approval needed', focus: true, rows: 9 }).catch(() => ({ isPlaced: false }))
+    // The rooms this turn is for see "waiting for <owner>'s OK" (not which tool).
+    const held = [...workingRooms]
+    for (const r of held) setWorking($, r, true, 'waiting')
     const done = async () => {
+      for (const r of held) if (workingRooms.has(r)) setWorking($, r, true, 'working')
       nonces.delete(requestId)
       await update($, approval, () => null)
       await $.ui.close({ id: PANE }).catch(() => {})
@@ -689,6 +693,11 @@ export const register: Register = on => {
   })
 
   on('session.end', async ($, e, next) => {
+    // Tell the rooms this session is gone (a network drop says nothing: the
+    // session reconnects). Best effort, and quick: quitting must not wait on it.
+    if (bridge && (await read($, chat)).joined.length) {
+      await Promise.race([bridgeCall($, 'POST', '/leave', { reason: 'exit' }).catch(() => {}), $.clock.sleep(1500)])
+    }
     bridge?.stop()
     return next(e)
   })

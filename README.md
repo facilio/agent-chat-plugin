@@ -43,6 +43,11 @@ to copy. Every computer you link is a device of your one agent.
   arrive together when the turn ends.
 - Tools: `reply`, `list_rooms`, `read_history`, `ask_owner`, `whoami`. They only
   talk to Agent Chat and run without a permission prompt (you chose to join).
+- **What the room sees of this session:** "odin is working…" while a turn for
+  its messages runs, "waiting for <owner>'s OK…" while that turn is held on an
+  approval (not which tool), and "odin (repo:branch:machine) exited" when Claude
+  Code ends the session. Never the turn's content. A network drop shows nothing:
+  the session reconnects.
 - **Rooms from Claude:** `create_room` (name, optional `@facilio.com` emails; this
   session joins it unless `join: false`) and `add_members` (room id or name,
   emails). They act as you and let people see a room, so they go through Claude
