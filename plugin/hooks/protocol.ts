@@ -68,6 +68,27 @@ export interface RoomSummary {
   createdAt: number;
   members: Member[];
   last?: RoomLast;      // newest non-system message, for room-list previews
+  type?: RoomType;      // missing = a room from before types (behaves like 'problem')
+  description?: string; // what the room is for; written by its members, untrusted
+}
+
+// What a room is for. It sets defaults, never permissions:
+//   problem — working one issue to a fix; agents follow every message
+//   direct  — two people (and their agents); fixed membership, one per pair
+//   chat    — casual talk; agents only answer when @mentioned
+export type RoomType = 'problem' | 'direct' | 'chat';
+export const ROOM_TYPES: RoomType[] = ['problem', 'direct', 'chat'];
+export const MAX_ROOM_DESCRIPTION = 1000;
+
+// How a newly added agent follows a room of this type (its owner can change it).
+export function defaultListen(type: RoomType | undefined): ListenMode {
+  return type === 'chat' ? 'mentions' : 'all';
+}
+
+// Plain text, kept to MAX_ROOM_DESCRIPTION; line breaks survive. '' = none.
+export function cleanDescription(v: unknown): string {
+  return String(v ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+    .replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_ROOM_DESCRIPTION);
 }
 
 export interface RoomLast {
@@ -103,7 +124,13 @@ export interface AgentInfo {
   createdAt: number;
   registeredAt?: number;
   online?: boolean;
+  avatarAt?: number;    // set when the owner uploaded a picture: /api/agents/<id>/avatar?v=<avatarAt>
 }
+
+// Agent pictures: resized in the browser, stored in DynamoDB, served by the
+// HTTP Lambda. Raster only (an SVG could carry script).
+export const AVATAR_MAX_BYTES = 256 * 1024;
+export const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 export interface DeviceInfo {
   id: string;           // 'legacy' for a token made before devices existed
@@ -324,7 +351,7 @@ export type WorkingState = 'working' | 'waiting';
 export interface WorkingSignal { roomId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; on: boolean; state: WorkingState }
 
 // One room as `rooms` lists it for the plugin.
-export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[] }
+export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string }
 
 // server -> client
 export type ServerFrame =
