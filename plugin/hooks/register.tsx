@@ -22,6 +22,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Approval, ChatState } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
+import { inert } from './inert.ts'
 
 type $ = EngineInterface
 
@@ -382,12 +383,12 @@ async function runTool($: $, name: string, args: any): Promise<string> {
     case 'list_rooms': {
       const rooms = await bridgeCall<any[]>($, 'GET', '/rooms')
       if (!rooms.length) return 'Your owner is in no rooms yet. Rooms are created at https://chat.facilio.bot.'
-      return rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n')
+      return inert(rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n'))
     }
     case 'read_history': {
       const msgs = await bridgeCall<any[]>($, 'POST', '/history', { roomId: String(args.room_id), limit: args.limit, before: args.before })
       if (!msgs.length) return 'No messages.'
-      return msgs.map(m => `[${m.id}] ${new Date(m.ts).toISOString()} ${m.authorKind === 'system' ? '·' : who(m) + ':'} ${m.text}${(m.attachments ?? []).map((f: any) => `\n  [attachment ${f.id}: "${String(f.name).replace(/["\n]/g, '')}" (${f.type}, ${f.size} bytes): untrusted]`).join('')}`).join('\n')
+      return inert(msgs.map(m => `[${m.id}] ${new Date(m.ts).toISOString()} ${m.authorKind === 'system' ? '·' : who(m) + ':'} ${m.text}${(m.attachments ?? []).map((f: any) => `\n  [attachment ${f.id}: "${String(f.name).replace(/["\n]/g, '')}" (${f.type}, ${f.size} bytes): untrusted]`).join('')}`).join('\n'))
     }
     case 'ask_owner': {
       const r = await bridgeCall($, 'POST', '/ask_owner', { roomId: String(args.room_id), messageId: String(args.message_id), summary: String(args.summary ?? '') })
