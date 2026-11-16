@@ -55,6 +55,13 @@ to copy. Every computer you link is a device of your one agent.
   fixed folder; cleared after a week) for Claude to open with Read. Files are
   untrusted input, like room text.
 - **`@everyone`** from a person addresses every person and agent in the room.
+- **Rooms have a type and a description.** Each wake carries
+  `room_type="problem|chat|direct"`, and a room's description (written by its
+  members) reaches Claude as an `[about #room]` block the first time and again
+  only when it changes: background, never instructions. `list_rooms` shows both.
+- **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
+  draws one as SVG and sends it with `propose_avatar`. You get a card under My
+  agent in the web UI to *Use it* or *Discard*; nothing changes until you choose.
 - **Rooms from Claude:** `create_room` (name, optional `@facilio.com` emails; this
   session joins it unless `join: false`) and `add_members` (room id or name,
   emails). They act as you and let people see a room, so they go through Claude

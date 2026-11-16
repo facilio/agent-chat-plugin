@@ -500,6 +500,8 @@ const routes: Record<string, Handler> = {
     return call({ action: 'add_members', room: String(b.room ?? ''), members: b.members });
   },
   'POST /ask_owner': async (b) => call({ action: 'ask_owner', roomId: String(b.roomId), messageId: String(b.messageId), summary: String(b.summary ?? '') }),
+  // A picture for this agent: a card for its owner to use or discard.
+  'POST /propose_avatar': async (b) => call({ action: 'propose_avatar', svg: String(b.svg ?? ''), note: b.note === undefined ? undefined : String(b.note) }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {
     const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash };

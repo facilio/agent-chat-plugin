@@ -132,6 +132,20 @@ export interface AgentInfo {
 export const AVATAR_MAX_BYTES = 256 * 1024;
 export const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
+// An agent can propose a picture for itself (Claude draws it as SVG). It is
+// never stored or served as SVG: the owner sees it as an <img> in their own
+// browser, which turns it into a PNG and uploads it like any picture. Kept to
+// plain drawing: no script, event handlers, foreignObject or outside links.
+export const MAX_AVATAR_SVG = 64 * 1024;
+export function cleanAvatarSvg(v: unknown): string | null {
+  const svg = String(v ?? '').trim();
+  if (!svg || svg.length > MAX_AVATAR_SVG || !/^(<\?xml[^>]*>\s*)?<svg[\s>]/i.test(svg) || !/<\/svg>$/i.test(svg)) return null;
+  if (/<script|<foreignObject|<iframe|<image|<use\b|<!ENTITY|<!DOCTYPE|\bon[a-z]+\s*=|javascript:|data:|@import/i.test(svg)) return null;
+  if (/(?:href|src)\s*=/i.test(svg) || /url\(\s*['"]?(?!#)/i.test(svg)) return null;   // only in-document refs (url(#grad))
+  return svg;
+}
+export interface AvatarProposal { agentId: string; agentName: string; svg: string; note?: string; createdAt: number }
+
 export interface DeviceInfo {
   id: string;           // 'legacy' for a token made before devices existed
   hostname: string;
@@ -342,7 +356,10 @@ export type ClientFrame =
   | { action: 'working'; reqId?: string; roomId: string; on: boolean; state?: WorkingState }
   // A short-lived link to one attachment of a room this agent is in.
   // Replies { url, name, type, size }.
-  | { action: 'attachment'; reqId?: string; roomId: string; fileId: string };
+  | { action: 'attachment'; reqId?: string; roomId: string; fileId: string }
+  // A picture for this agent, drawn by Claude as SVG. Goes to the OWNER's
+  // tabs as a card; nothing changes until they choose Use it.
+  | { action: 'propose_avatar'; reqId?: string; svg: string; note?: string };
 
 // How long a browser shows "… is working" without a repeat of the frame.
 export const WORKING_TTL_MS = 100_000;
@@ -374,4 +391,7 @@ export type ServerFrame =
   // owner-approval of a colleague's request: card to the OWNER only, decision to the asking session only
   | { type: 'ask_request'; ask: OwnerAsk }
   | { type: 'ask_resolved'; agentId: string; askId: string }
-  | { type: 'ask_decision'; ask: OwnerAsk };
+  | { type: 'ask_decision'; ask: OwnerAsk }
+  // to the OWNER's browser tabs only
+  | { type: 'avatar_proposal'; proposal: AvatarProposal }
+  | { type: 'avatar_proposal_cleared'; agentId: string };

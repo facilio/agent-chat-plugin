@@ -169,6 +169,13 @@ async function main() {
     assert.deepEqual([ssf.action, ssf.summary], ['session', 'reviewing pairing']);
     reply(ssf, { id: 'ss_test_session_1', label: 'agent-chat:main:mbp', summary: 'reviewing pairing' });
     assert.equal((await sess).data.summary, 'reviewing pairing');
+    // a picture Claude drew goes up as a proposal for the owner
+    const propF = nextFrame();
+    const proposing = cmd('POST', '/propose_avatar', { svg: '<svg viewBox="0 0 256 256"></svg>', note: 'a red helm' });
+    const ppf = await propF;
+    assert.deepEqual([ppf.action, ppf.svg, ppf.note], ['propose_avatar', '<svg viewBox="0 0 256 256"></svg>', 'a red helm']);
+    reply(ppf, { ok: true, owner: 'Owner Person' });
+    assert.equal((await proposing).data.owner, 'Owner Person');
 
     // 6. owner decision on a colleague's request wakes Claude with the outcome
     const decP = nextEvent((e) => e.type === 'wake' && /owner_decision/.test(e.text));
