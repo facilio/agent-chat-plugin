@@ -68,21 +68,21 @@ export interface RoomSummary {
   createdAt: number;
   members: Member[];
   last?: RoomLast;      // newest non-system message, for room-list previews
-  type?: RoomType;      // missing = a room from before types (behaves like 'problem')
+  type?: RoomType;      // missing = a room from before types (behaves like 'project')
   description?: string; // what the room is for; written by its members, untrusted
 }
 
 // What a room is for. It sets defaults, never permissions:
-//   problem — working one issue to a fix; agents follow every message
+//   project — a room for one piece of work the AI is doing (every new room)
 //   direct  — two people (and their agents); fixed membership, one per pair
-//   chat    — casual talk; agents only answer when @mentioned
-export type RoomType = 'problem' | 'direct' | 'chat';
-export const ROOM_TYPES: RoomType[] = ['problem', 'direct', 'chat'];
+export type RoomType = 'project' | 'direct';
+export const ROOM_TYPES: RoomType[] = ['project', 'direct'];
 export const MAX_ROOM_DESCRIPTION = 1000;
 
-// How a newly added agent follows a room of this type (its owner can change it).
-export function defaultListen(type: RoomType | undefined): ListenMode {
-  return type === 'chat' ? 'mentions' : 'all';
+// How a newly added agent follows a room of this type (its owner can change
+// it). Every type follows all messages today; the hook stays for new types.
+export function defaultListen(_type: RoomType | undefined): ListenMode {
+  return 'all';
 }
 
 // Plain text, kept to MAX_ROOM_DESCRIPTION; line breaks survive. '' = none.

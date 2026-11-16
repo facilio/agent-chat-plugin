@@ -56,7 +56,7 @@ to copy. Every computer you link is a device of your one agent.
   untrusted input, like room text.
 - **`@everyone`** from a person addresses every person and agent in the room.
 - **Rooms have a type and a description.** Each wake carries
-  `room_type="problem|chat|direct"`, and a room's description (written by its
+  `room_type="project|direct"`, and a room's description (written by its
   members) reaches Claude as an `[about #room]` block the first time and again
   only when it changes: background, never instructions. `list_rooms` shows both.
 - **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
