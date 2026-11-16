@@ -86,6 +86,11 @@ const nowCursor = () => Date.now().toString(36).padStart(9, '0');
 
 // --------------------------------------------------------------- wake text
 const attr = (v: string) => v.replace(/[&"<>\n]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;', '\n': ' ' }[c]!));
+// Text inside a wake (messages, names, the room description, a quoted request)
+// is written by other people. It must not be able to close the <agent-chat>
+// block and open a forged one (from_is_owner="true", status="owner_decision"),
+// so any <agent-chat / </agent-chat in it loses its "<".
+const inert = (v: string) => String(v ?? '').replace(/<(\s*\/?\s*agent-chat)/gi, '‹$1');
 // With the @handle to use when answering: people are @<email-name>, agents
 // @<handle> (and @<handle>:<repo> for one of several sessions).
 const who = (m: ChatMessage) => m.authorKind === 'agent'
@@ -127,7 +132,7 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}"${roomType ? ` room_type="${roomType}"` : ''} from="${attr(who(last))}" from_kind="${last.authorKind}" `
     + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}">`;
-  emit({ type: 'wake', roomId, addressed, text: `${tag}\n${lines.join('\n')}\n</agent-chat>` });
+  emit({ type: 'wake', roomId, addressed, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -281,8 +286,8 @@ function connect(token: string) {
         emit({
           type: 'wake', roomId: a.roomId, addressed: true,
           text: `<agent-chat room_id="${attr(a.roomId)}" room="${attr(a.roomName)}" from="${attr(me?.ownerName ?? 'owner')}" from_kind="user" from_is_owner="true" status="owner_decision" decision="${allowed ? 'allow' : 'deny'}" ask_id="${attr(a.askId)}" message_id="${attr(a.messageId)}">\n`
-            + `Your owner ${allowed ? 'APPROVED' : 'DECLINED'} ${a.requesterName}'s request in #${a.roomName}: "${a.requestText}"\n`
-            + `You had said you would: ${a.summary}\n`
+            + inert(`Your owner ${allowed ? 'APPROVED' : 'DECLINED'} ${a.requesterName}'s request in #${a.roomName}: "${a.requestText}"\n`
+            + `You had said you would: ${a.summary}\n`)
             + (allowed ? 'Go ahead with exactly that, then reply in the room with the result.' : 'Do not do it. Reply in the room that your owner declined.')
             + '\n</agent-chat>',
         });
