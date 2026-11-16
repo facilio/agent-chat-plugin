@@ -240,6 +240,7 @@ async function flushWakes($: $) {
   roomTurn = true
   for (const r of wakeRooms) setWorking($, r, true)
   wakeRooms.clear()
+  await ensureTools($)
   try { await $.prompt.submit({ text }) } catch (e) { busy = false; roomTurn = false; for (const r of [...workingRooms]) setWorking($, r, false); $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
 }
 
@@ -341,6 +342,22 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
 ] as const
+
+// Registers every tool; a name registered again is replaced, so this is safe to
+// repeat. Registering only at session.start isn't enough: a session started over
+// Remote Control (rene, Claude Code 2.1.322, 2026-11-16) came up with the command
+// and room events working but no mcp__agent-chat__* tools and no error, so it
+// heard #Chillout and could never answer. Join and every room wake register again.
+// A refused tool (e.g. by org policy) is kept in toolProblems and shown, never dropped.
+async function ensureTools($: $): Promise<void> {
+  const problems: string[] = []
+  await Promise.all(TOOLS.map(t =>
+    $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema as any })
+      .catch(err => { problems.push(`${t.name}: ${(err as Error).message}`) })))
+  const was = toolProblems.join('\n')
+  toolProblems.splice(0, toolProblems.length, ...problems)
+  if (problems.length && problems.join('\n') !== was) $.ui.log(`Agent Chat: ${problems.length} tool(s) could not be registered, so this session can't answer in rooms — ${problems[0]}`)
+}
 
 const OWNER_ACTIONS = new Set(['create_room', 'add_members'])
 
@@ -449,6 +466,7 @@ async function command($: $, args: string): Promise<string> {
           ? `First, link this computer to Agent Chat: open ${p.url} and click Link (code ${p.code}). This session joins #${arg.replace(/^#/, '')} as soon as it's linked.`
           : `Connecting to Agent Chat… this session joins #${arg.replace(/^#/, '')} once connected. (/agent-chat status)`
       }
+      await ensureTools($)
       if (toolProblems.length) return `Can't join: this session's Agent Chat tools were refused (${toolProblems[0]}), so it couldn't answer in the room. /agent-chat status`
       const room = await bridgeCall($, 'POST', '/join', { room: arg })
       void maybeSummarize($, true)
@@ -546,15 +564,9 @@ export const register: Register = on => {
     const started = await next(e)
     // A reload (or plugin update) mid-session: come back to the same rooms.
     if ((await read($, chat)).joined.length) void ensureBridge($).catch(err => $.ui.log(`Agent Chat: ${err.message}`, { to: 'debug' }))
+    // Tools first: without `reply` the session can hear a room but never answer it.
+    await ensureTools($)
     await $.command.register({ name: NAME, description: 'Join an Agent Chat room from this session, or leave, list rooms, status', argumentHint: 'join <room> | leave | rooms | status | help' })
-    // A refused tool (e.g. by org policy) must not go unnoticed: without
-    // `reply` the session can hear a room but never answer it.
-    toolProblems.length = 0
-    for (const t of TOOLS) {
-      try { await $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema as any }) }
-      catch (err) { toolProblems.push(`${t.name}: ${(err as Error).message}`) }
-    }
-    if (toolProblems.length) $.ui.log(`Agent Chat: ${toolProblems.length} tool(s) could not be registered, so this session can't answer in rooms — ${toolProblems[0]}`)
     return started
   })
 
