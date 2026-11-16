@@ -14,6 +14,7 @@ export type ChatState = {
   promptsSinceSummary: number;
   pendingJoin?: string;                 // a join waiting for this computer to be linked
   rulesShown?: boolean;                 // the model has the room rules (cleared by a compaction)
+  tainted?: boolean;                    // the current turn read others' words: actions wait for the owner (hold.ts)
 };
 
 // A tool call held for the owner's answer (terminal pane + web card).

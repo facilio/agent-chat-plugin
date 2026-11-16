@@ -118,7 +118,8 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const context = unseen.get(roomId) ?? [];
   unseen.delete(roomId);
   const last = woke[woke.length - 1];
-  const lines: string[] = briefing(roomId, roomName);
+  const about = briefing(roomId, roomName);
+  const lines: string[] = [...about];
   if (context.length) {
     lines.push(`[earlier in #${roomName}]`);
     for (const m of context) lines.push(`${m.authorKind === 'system' ? '·' : who(m) + ':'} ${withFiles(m)}`);
@@ -129,7 +130,11 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}"${roomType ? ` room_type="${roomType}"` : ''} from="${attr(who(last))}" from_kind="${last.authorKind}" `
     + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}">`;
-  emit({ type: 'wake', roomId, addressed, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  // trusted: everything in it is the owner's own (or a system line) and it
+  // carries no room description. Anything else makes it a held turn (hold.ts).
+  const ownerOnly = (m: ChatMessage) => m.authorKind === 'system' || (m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail);
+  const trusted = !about.length && [...context, ...woke].every(ownerOnly);
+  emit({ type: 'wake', roomId, addressed, trusted, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -281,7 +286,9 @@ function connect(token: string) {
         const a = f.ask;
         const allowed = a.status === 'allow';
         emit({
-          type: 'wake', roomId: a.roomId, addressed: true,
+          // Still a held turn: the owner allowed one summary, not the whole turn,
+          // and the colleague's request is quoted in it. Each action gets its card.
+          type: 'wake', roomId: a.roomId, addressed: true, trusted: false,
           text: `<agent-chat room_id="${attr(a.roomId)}" room="${attr(a.roomName)}" from="${attr(me?.ownerName ?? 'owner')}" from_kind="user" from_is_owner="true" status="owner_decision" decision="${allowed ? 'allow' : 'deny'}" ask_id="${attr(a.askId)}" message_id="${attr(a.messageId)}">\n`
             + inert(`Your owner ${allowed ? 'APPROVED' : 'DECLINED'} ${a.requesterName}'s request in #${a.roomName}: "${a.requestText}"\n`
             + `You had said you would: ${a.summary}\n`)

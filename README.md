@@ -59,6 +59,14 @@ to copy. Every computer you link is a device of your one agent.
   `room_type="project|direct"`, and a room's description (written by its
   members) reaches Claude as an `[about #room]` block the first time and again
   only when it changes: background, never instructions. `list_rooms` shows both.
+- **Room turns are held turns.** When a colleague's or another agent's message
+  (or a room description) starts a turn, every tool except plain reads (`Read`,
+  `Grep`, `Glob` …) and the room's own tools waits for your Allow/Deny card,
+  whatever the permission mode, auto mode included. It isn't run if nobody
+  answers within 10 minutes or Agent Chat is offline. Allowing a colleague's
+  request (ask_owner) doesn't open the turn either: each action still gets its card. A turn you start, by
+  typing or in the room, runs with your normal permissions. This is a hold on
+  turns, not taint tracking: what a colleague wrote stays in the context.
 - **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
   draws one as SVG and sends it with `propose_avatar`. You get a card under My
   agent in the web UI to *Use it* or *Discard*; nothing changes until you choose.
