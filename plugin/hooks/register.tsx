@@ -21,6 +21,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
+import { privateDetails } from './privacy.ts'
 
 type $ = EngineInterface
 
@@ -416,6 +417,81 @@ async function runTool($: $, name: string, args: any): Promise<string> {
   throw new Error(`unknown tool ${name}`)
 }
 
+// Rooms where every reply waits for the owner (/agent-chat review), on this
+// computer, for all its sessions. '*' is every room.
+async function reviewRooms($: $): Promise<string[]> {
+  const v = await $.store.get('reviewRooms')
+  return Array.isArray(v) ? v.map(String) : []
+}
+
+// Why a reply needs the owner's OK, or null to post it.
+async function replyNeedsOwner($: $, input: any): Promise<string | null> {
+  const roomId = String(input?.room_id ?? '')
+  const review = await reviewRooms($)
+  if (review.includes('*') || review.includes(roomId)) return 'every reply in this room waits for you (/agent-chat review)'
+  const s = await read($, chat)
+  const ownHost = (s.label ?? '').split(':').pop()
+  const hits = privateDetails(String(input?.text ?? ''), ownHost)
+  if (!hits.length) return null
+  const why = `it mentions ${hits.join(', ')}`
+  // Only when someone besides the owner can read it; when we can't tell, hold.
+  const ownerEmail = lastStatus?.me?.ownerEmail
+  if (!ownerEmail) return why
+  const rooms = await bridgeCall<any[]>($, 'GET', '/rooms').catch(() => null)
+  const room = rooms?.find(r => r.id === roomId)
+  if (!room) return why
+  const others = room.members.some((m: any) => m.kind === 'user' ? m.id !== ownerEmail : m.kind === 'agent' && m.ownerEmail !== ownerEmail)
+  return others ? why : null
+}
+
+type Verdict = { decision: 'allow' | 'deny' | 'ask'; reason?: string; [k: string]: unknown }
+// Holds a tool call for the owner: an Allow/Deny card in the web UI (never in
+// the room) and the same choice in a pane here, plus "use the normal prompt".
+// First answer wins. Waiting is all $.http.fetch long-polls, which don't count
+// against the hook's time budget. webOnlyOk: keep waiting on the web card when
+// no pane can be placed (Remote Control, headless); otherwise fall back to the
+// normal prompt.
+async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict }): Promise<any> {
+  const ids = 'abcdefghijkmnopqrstuvwxyz'
+  const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
+  const nonce = rand(16)
+  try {
+    await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description: o.description, inputPreview: o.preview.slice(0, 4000), nonceHash: await sha256(nonce) })
+  } catch { return o.onTerminal }
+  nonces.set(requestId, nonce)
+  await update($, approval, () => ({ requestId, tool: e.tool, description: o.description, preview: o.preview.slice(0, 600) }))
+  const placed = (await $.store.get('paneOff')) === true
+    ? { isPlaced: false }
+    : await $.ui.open({ id: PANE, title: 'Agent Chat · approval needed', focus: true, rows: 9 }).catch(() => ({ isPlaced: false }))
+  // The rooms this turn is for see "waiting for <owner>'s OK" (not which tool).
+  const held = [...workingRooms]
+  for (const r of held) setWorking($, r, true, 'waiting')
+  const done = async () => {
+    for (const r of held) if (workingRooms.has(r)) setWorking($, r, true, 'working')
+    nonces.delete(requestId)
+    await update($, approval, () => null)
+    await $.ui.close({ id: PANE }).catch(() => {})
+  }
+  if (!placed.isPlaced && !o.webOnlyOk) {
+    await bridgeCall($, 'POST', '/permission/cancel', { requestId }).catch(() => {})
+    await done()
+    return o.onTerminal
+  }
+  const until = Date.now() + PERMISSION_WAIT_MS
+  try {
+    while (Date.now() < until && !next.signal?.aborted) {
+      const r = await bridgeCall<{ behavior: string | null }>($, 'POST', '/permission/wait', { requestId, waitMs: 25000 }).catch(() => ({ behavior: null }))
+      if (r.behavior === 'allow') return { decision: 'allow' as const, reason: 'Allowed by the owner (Agent Chat)' }
+      if (r.behavior === 'deny') return o.onDeny
+      if (r.behavior === 'terminal') return o.onTerminal
+    }
+    await bridgeCall($, 'POST', '/permission/cancel', { requestId }).catch(() => {})
+    return o.onTimeout
+  } finally {
+    await done()
+  }
+}
+
 // ---------------------------------------------------------------- commands
 const HELP = `Agent Chat — talk with colleagues and their agents from this session.
   /agent-chat join <room>        join a room (by name); links this computer the first time
@@ -426,6 +502,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat summary <on|off|text>  the one-line "working on" shown next to the label
   /agent-chat connect            link this computer again (new link)
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
+  /agent-chat review <on|off> [room|all]  every reply there waits for your OK (looks-private replies always do)
 Rooms are created at https://chat.facilio.bot.`
 
 async function versionError($: $): Promise<string | null> {
@@ -541,6 +618,34 @@ async function command($: $, args: string): Promise<string> {
       if (bridge) await bridgeCall($, 'POST', '/session', { summary }).catch(() => {})
       return `Summary set: "${summary}" (won't auto-update; /agent-chat summary on to resume).`
     }
+    case 'review': {
+      // /agent-chat review [on|off] [room|all]: every reply this computer's sessions
+      // post there waits for your OK. Without a room: the rooms this session joined.
+      const [mode, ...rest] = arg.split(/\s+/).filter(Boolean)
+      const s = await read($, chat)
+      let cur = await reviewRooms($)
+      const label = (id: string) => id === '*' ? 'every room' : `#${s.roomNames[id] ?? id}`
+      if (mode !== 'on' && mode !== 'off') {
+        return `review: ${cur.length ? cur.map(label).join(', ') : 'off'}   (/agent-chat review on|off [room|all]). Replies that look private are held anyway.`
+      }
+      const target = rest.join(' ').replace(/^#/, '')
+      let ids: string[]
+      if (target === 'all' || target === '*') ids = ['*']
+      else if (target) {
+        const rooms = await bridgeCall<any[]>($, 'GET', '/rooms').catch(() => [] as any[])
+        const r = rooms.find(x => x.id === target || x.name.toLowerCase() === target.toLowerCase())
+        if (!r) return `No room #${target} that you're in. /agent-chat rooms`
+        ids = [r.id]
+      } else {
+        if (!s.joined.length) return 'Which room? /agent-chat review on <room|all>'
+        ids = s.joined
+      }
+      cur = mode === 'on' ? [...new Set([...cur, ...ids])] : (ids.includes('*') ? [] : cur.filter(x => !ids.includes(x)))
+      await $.store.set('reviewRooms', cur)
+      return mode === 'on'
+        ? `Review on for ${ids.map(label).join(', ')}: this computer's sessions post there only after you click Allow (web, phone or here).`
+        : `Review ${cur.length ? `now on for ${cur.map(label).join(', ')}` : 'off'}. Replies that look private are still held.`
+    }
     case 'pane': {
       if (arg === 'off') {
         await $.store.set('paneOff', true)
@@ -586,7 +691,35 @@ export const register: Register = on => {
   on('tool.call', { tool: new RegExp(`^mcp__${NAME}__`) }, async ($, e, next) => {
     const name = e.tool.slice(`mcp__${NAME}__`.length)
     if (!TOOLS.some(t => t.name === name)) return next(e)
-    try { return { result: await runTool($, name, e) } } catch (err) { return { deny: (err as Error).message } }
+    try {
+      // The reply guard lives here, not in tool.check: Claude Code doesn't run
+      // tool.check for a plugin's own registered tools. A reply goes out unasked
+      // unless it looks private and someone besides the owner can read the room,
+      // or the room is under /agent-chat review; then it waits for the owner.
+      if (name === 'reply') {
+        const input = (e as any).input ?? e
+        const why = await replyNeedsOwner($, input)
+        if (why) {
+          const text = String(input.text ?? '')
+          const room = (await read($, chat)).roomNames[String(input.room_id ?? '')]
+          const notPosted = (reason: string) => ({ decision: 'deny' as const, reason })
+          const v = bridge && lastStatus?.state === 'online'
+            ? await holdForOwner($, e, next, {
+              description: `Post in #${room ?? 'room'}: "${text.replace(/\s+/g, ' ').slice(0, 140)}${text.length > 140 ? '…' : ''}" (held because ${why})`,
+              preview: text,
+              webOnlyOk: true,
+              onTerminal: notPosted('Your owner chose to handle this reply in the terminal; it was NOT posted. Ask them there.'),
+              onTimeout: notPosted('Your owner did not approve this reply within 10 minutes; it was NOT posted. Do not share its private details; you may post a version without them.'),
+              onDeny: notPosted(why.startsWith('every reply')
+                ? 'Your owner declined this reply; it was NOT posted. Don\'t post it again unless they ask.'
+                : 'Your owner declined this reply; it was NOT posted. Do not repeat its private details; post a version without them, or say you can\'t share that.'),
+            })
+            : notPosted(`Not posted: this reply needs your owner's OK (${why}), and Agent Chat isn't connected to ask.`)
+          if (v.decision !== 'allow') return { deny: v.reason ?? 'Not posted.' }
+        }
+      }
+      return { result: await runTool($, name, e) }
+    } catch (err) { return { deny: (err as Error).message } }
   })
 
   // 1. The session's owner chose to join the room, so posting there and
@@ -601,53 +734,21 @@ export const register: Register = on => {
   //    don't count against the hook's time budget.
   on('tool.check', async ($, e, next) => {
     // Posting and reading in rooms the owner joined needs no extra prompt; making
-    // rooms and letting people into them goes through the normal check.
+    // rooms and letting people into them goes through the normal check. (The
+    // reply guard is in tool.call.)
     if (TOOLS.some(t => T(t.name) === e.tool && !OWNER_ACTIONS.has(t.name))) return { decision: 'allow' as const }
     const verdict = await next(e)
     if (verdict.decision !== 'ask' || verdict.plugin || e.approver !== 'person' || !e.tool_use_id) return verdict
     const s = await read($, chat)
     if (!bridge || !s.joined.length || lastStatus?.state !== 'online') return verdict
     if (!roomTurn || (await $.store.get('paneOff')) === true) return verdict
-    const ids = 'abcdefghijkmnopqrstuvwxyz'
-    const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
-    const nonce = rand(16)
-    const preview = JSON.stringify(e.input ?? {}, null, 1)
-    const description = verdict.reason ? `${describe(e.tool, e.input)} — ${verdict.reason}` : describe(e.tool, e.input)
-    try {
-      await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description, inputPreview: preview.slice(0, 4000), nonceHash: await sha256(nonce) })
-    } catch { return verdict }
-    nonces.set(requestId, nonce)
-    await update($, approval, () => ({ requestId, tool: e.tool, description, preview: preview.slice(0, 600) }))
-    const placed = await $.ui.open({ id: PANE, title: 'Agent Chat · approval needed', focus: true, rows: 9 }).catch(() => ({ isPlaced: false }))
-    // The rooms this turn is for see "waiting for <owner>'s OK" (not which tool).
-    const held = [...workingRooms]
-    for (const r of held) setWorking($, r, true, 'waiting')
-    const done = async () => {
-      for (const r of held) if (workingRooms.has(r)) setWorking($, r, true, 'working')
-      nonces.delete(requestId)
-      await update($, approval, () => null)
-      await $.ui.close({ id: PANE }).catch(() => {})
-    }
-    // No room in this terminal for the pane: don't leave the person without a
-    // local way to answer — withdraw the card and use the normal prompt.
-    if (!placed.isPlaced) {
-      await bridgeCall($, 'POST', '/permission/cancel', { requestId }).catch(() => {})
-      await done()
-      return verdict
-    }
-    const until = Date.now() + PERMISSION_WAIT_MS
-    try {
-      while (Date.now() < until && !next.signal?.aborted) {
-        const r = await bridgeCall<{ behavior: string | null }>($, 'POST', '/permission/wait', { requestId, waitMs: 25000 }).catch(() => ({ behavior: null }))
-        if (r.behavior === 'allow') return { decision: 'allow' as const, reason: 'Allowed by the owner (Agent Chat)' }
-        if (r.behavior === 'deny') return { decision: 'deny' as const, reason: 'Denied by the owner (Agent Chat)' }
-        if (r.behavior === 'terminal') return verdict
-      }
-      await bridgeCall($, 'POST', '/permission/cancel', { requestId }).catch(() => {})
-      return verdict
-    } finally {
-      await done()
-    }
+    return holdForOwner($, e, next, {
+      description: verdict.reason ? `${describe(e.tool, e.input)} — ${verdict.reason}` : describe(e.tool, e.input),
+      preview: JSON.stringify(e.input ?? {}, null, 1),
+      webOnlyOk: false,
+      onTerminal: verdict, onTimeout: verdict,
+      onDeny: { decision: 'deny' as const, reason: 'Denied by the owner (Agent Chat)' },
+    })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
