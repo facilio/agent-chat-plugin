@@ -82,7 +82,7 @@ async function main() {
   wss.on('connection', (s, req) => {
     connects++;
     assert.equal(req.headers.authorization, 'Bearer ac_paired');
-    assert.match(String(req.headers['user-agent']), /^agent-chat-plugin\/0\.6\./);
+    assert.match(String(req.headers['user-agent']), /^agent-chat-plugin\/0\.11\./);
     sock = s;
     s.on('message', (raw) => {
       const f = JSON.parse(String(raw));
@@ -140,7 +140,7 @@ async function main() {
 
     // 2. hello carries the session
     const hello = await helloP;
-    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.6.1', ['sessions']]);
+    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.11.0', ['sessions']]);
     assert.deepEqual(hello.session, { id: 'ss_test_session_1', label: 'agent-chat:main:mbp', rooms: [] });
     sock.send(JSON.stringify({ type: 'hello', reqId: hello.reqId, agent, session: { id: 'ss_test_session_1', label: 'agent-chat:main:mbp' }, rooms: [], missed: [] }));
     await nextEvent((e) => e.type === 'status' && e.state === 'online');
@@ -311,6 +311,23 @@ async function main() {
     sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'abcde', behavior: 'deny' }));
     assert.equal((await waiting).data.behavior, 'deny');
     assert.equal((await cmd('POST', '/permission/wait', { requestId: 'zzzzz', waitMs: 50 })).data.behavior, null, 'times out empty');
+    // "Allow for this session": the scope comes back with the verdict (web card or pane)
+    const sesF = nextFrame();
+    const ses = cmd('POST', '/permission', { requestId: 'sessn', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'c'.repeat(64) });
+    reply(await sesF, { requestId: 'sessn' });
+    await ses;
+    const sesWait = cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 5000 });
+    await new Promise((r) => setTimeout(r, 50));
+    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'sessn', behavior: 'allow', scope: 'session' }));
+    assert.deepEqual([(await sesWait).data.behavior, (await sesWait).data.scope], ['allow', 'session'], 'the session scope reaches the hook');
+    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 50 })).data.scope, 'session', 'and is kept for a late long-poll');
+    const onceF = nextFrame();
+    const once = cmd('POST', '/permission', { requestId: 'oncex', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'd'.repeat(64) });
+    reply(await onceF, { requestId: 'oncex' });
+    await once;
+    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'oncex', behavior: 'allow' }));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'oncex', waitMs: 50 })).data.scope, undefined, 'a plain Allow is once');
     // a second request is still waiting when the connection drops (step 8)
     const pend2F = nextFrame();
     const pend2 = cmd('POST', '/permission', { requestId: 'fghij', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'b'.repeat(64) });

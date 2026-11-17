@@ -103,3 +103,15 @@ test('after a plugin update (empty state), the session comes back to its rooms',
   expect(got?.value?.sessionId).toBe('ss_kept')
   expect(got?.value?.joined).toEqual(['rm_9'])
 })
+
+test('after "Allow for this session", a held turn runs without asking again; /agent-chat hold on asks again', async ($, on) => {
+  const st = engine(on)
+  st.seed(chatWith({ sessionGrant: true }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
+  expect(ran(await $.tool.call({ tool: 'Edit', file_path: 'a', old_string: 'x', new_string: 'y' } as any))).toBe(true)
+  // a subagent outside any task, on the granted session: runs too
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'other' } as any))).toBe(true)
+  // taken back: held again
+  st.seed(chatWith({ sessionGrant: false }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+})

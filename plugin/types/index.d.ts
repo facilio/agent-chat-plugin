@@ -18,6 +18,9 @@ export type ChatState = {
   tasks?: TaskRec[];                    // tasks running in subagents (tasks.ts)
   usedSources?: string[];               // owner messages / asks that already started a task (each starts one)
   endedAgents?: string[];               // task subagents that ended: anything more from them is refused
+  // "Allow for this session": the owner's one approval for the session.
+  sessionGrant?: boolean;               // turns others started stop waiting for the owner (hold.ts)
+  grantedTools?: string[];              // Claude Code's own prompts: these tools don't ask again here
 };
 
 // A task: approved work running in an agent-chat:task subagent (tasks.ts).

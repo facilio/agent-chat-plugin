@@ -23,7 +23,9 @@ import { dirname, join } from 'node:path';
 import { inert } from '../plugin/hooks/inert';
 import { FILE_ID_RE, MAX_FILE_BYTES, isAddressed, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
-const VERSION = '0.6.1';
+// The plugin's version (plugin.json): the backend can require a minimum
+// (MIN_PLUGIN_VERSION) to move every session onto a release.
+const VERSION = '0.11.0';
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
 const STATE_DIR = process.env.AGENT_CHAT_STATE_DIR || join(homedir(), '.claude', 'channels', 'agent-chat');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';
@@ -194,6 +196,8 @@ const PENDING_TTL_MS = 10 * 60_000;
 const pendingPerms = new Map<string, { frame: Record<string, unknown>; at: number }>();
 const settle = (id: string) => { pendingPerms.delete(id); };
 const verdicts = new Map<string, string>();
+// 'session' when the owner chose Allow for this session (web card or pane).
+const scopes = new Map<string, string>();
 
 function request(frame: Record<string, unknown>, timeoutMs = 15000): Promise<ServerFrame> {
   return new Promise((resolve, reject) => {
@@ -340,6 +344,7 @@ function connect(token: string) {
         // only sends a verdict after checking the clicker owns this agent.
         if (f.behavior === 'allow' || f.behavior === 'deny') {
           settle(f.requestId);
+          if (f.behavior === 'allow' && f.scope === 'session') scopes.set(f.requestId, 'session');
           verdicts.set(f.requestId, f.behavior);
           for (const w of verdictWaiters.get(f.requestId) ?? []) w(f.behavior);
           verdictWaiters.delete(f.requestId);
@@ -583,14 +588,14 @@ const routes: Record<string, Handler> = {
   },
   'POST /permission/wait': async (b) => {
     const id = String(b.requestId);
-    if (verdicts.has(id)) return { behavior: verdicts.get(id) };
+    if (verdicts.has(id)) return { behavior: verdicts.get(id), scope: scopes.get(id) };
     const behavior = await new Promise<string | null>((resolve) => {
       const t = setTimeout(() => resolve(null), Math.min(Number(b.waitMs ?? 25000), 55000));
       const list = verdictWaiters.get(id) ?? [];
       list.push((v) => { clearTimeout(t); resolve(v); });
       verdictWaiters.set(id, list);
     });
-    return { behavior };
+    return { behavior, scope: scopes.get(id) };
   },
   // Answered in the terminal (the module's pane): tell the backend so the
   // owner's web card clears, and wake the hook's long-poll. 'terminal' = hand
@@ -598,6 +603,7 @@ const routes: Record<string, Handler> = {
   'POST /permission/answer': async (b) => {
     const id = String(b.requestId);
     const behavior = String(b.behavior);
+    if (behavior === 'allow' && b.scope === 'session') scopes.set(id, 'session');
     settle(id);
     if (behavior === 'terminal') await call({ action: 'permission_cancel', requestId: id }).catch(() => {});
     else await call({ action: 'permission_answer', requestId: id, behavior, nonce: b.nonce }).catch(() => {});

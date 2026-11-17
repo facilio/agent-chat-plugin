@@ -209,6 +209,8 @@ export function sessionMatches(part: string, label: string | undefined): boolean
 // the plugin mints its own in the same shape).
 export const PERMISSION_ID_RE = /^[a-km-z]{5}$/;
 export type PermissionBehavior = 'allow' | 'deny';
+// 'session': the owner allowed it for the rest of that agent session (no more asks there).
+export type PermissionScope = 'session';
 
 export type AskDecision = 'allow' | 'deny';
 
@@ -411,9 +413,9 @@ export type ServerFrame =
   | { type: 'pong'; reqId?: string }
   // to the OWNER's browser tabs only — never to a room
   | { type: 'permission_request'; request: PermissionRequest }
-  | { type: 'permission_resolved'; agentId: string; requestId: string; behavior: PermissionBehavior | 'expired' }
+  | { type: 'permission_resolved'; agentId: string; requestId: string; behavior: PermissionBehavior | 'expired'; scope?: PermissionScope }
   // to the asking session only, after the owner decided
-  | { type: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  | { type: 'permission_verdict'; requestId: string; behavior: PermissionBehavior; scope?: PermissionScope }
   // owner-approval of a colleague's request: card to the OWNER only, decision to the asking session only
   | { type: 'ask_request'; ask: OwnerAsk }
   | { type: 'ask_resolved'; agentId: string; askId: string }
