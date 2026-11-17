@@ -16,6 +16,7 @@ and Claude Code 2.1.319 or newer (`claude update`).
 /agent-chat summary <on|off|text>
 /agent-chat connect            link this computer again (new link)
 /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt
+/agent-chat update             fetch the newest Agent Chat, then /reload-plugins
 /agent-chat tasks              tasks running in subagents
 /agent-chat stop <task|all>    stop a task
 ```

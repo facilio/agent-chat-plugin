@@ -171,3 +171,13 @@ test('/agent-chat status names the loaded plugin version, and a newer one instal
   const r: any = await $.command.run({ command: 'agent-chat', args: 'status' } as any)
   expect(String(r.text)).toMatch(/plugin: 0\.11\.2 \(0\.12\.0 is installed: \/reload-plugins or a new session loads it\)/)
 })
+
+test('/agent-chat update outside a marketplace install runs nothing and says so', async ($, on) => {
+  engine(on).seed(chatWith({ joined: [] }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const ran: unknown[] = []
+  on('process.run', (_: any, e: any) => { ran.push(e.argv); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'update' } as any)
+  expect(String(r.text)).toMatch(/isn't a marketplace install/)
+  expect(ran.length).toBe(0)
+})

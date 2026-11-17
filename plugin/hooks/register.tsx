@@ -25,6 +25,7 @@ import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { OWNER_ACTS, READ_TOOLS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
+import { marketplaceInstall, updateCommands } from './install.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
 type $ = EngineInterface
@@ -852,6 +853,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
   /agent-chat hold [on]          who you allowed for this session; on = ask again for everyone
   /agent-chat review <on|off> [room|all]  every reply there waits for your OK (looks-private replies always do)
+  /agent-chat update             fetch the newest Agent Chat (works over Remote Control), then /reload-plugins
   /agent-chat tasks              tasks running in subagents (work you gave or approved in a room)
   /agent-chat stop <task|all>    stop a task
 Rooms are created at https://chat.facilio.bot.`
@@ -1000,6 +1002,29 @@ async function command($: $, args: string): Promise<string> {
       return mode === 'on'
         ? `Review on for ${ids.map(label).join(', ')}: this computer's sessions post there only after you click Allow (web, phone or here).`
         : `Review ${cur.length ? `now on for ${cur.map(label).join(', ')}` : 'off'}. Replies that look private are still held.`
+    }
+    case 'update': {
+      // /plugin isn't offered over Remote Control; the claude CLI does the same
+      // without a screen. Loading it stays /reload-plugins (which keeps the
+      // session in its rooms since 0.10.2): a plugin can't reload itself.
+      const where = marketplaceInstall($.plugin.root)
+      if (!where) return `This Agent Chat isn't a marketplace install (${$.plugin.root}): update it where it came from.`
+      const { market, plugin } = where
+      const [refresh, upgrade] = updateCommands(where) as [string[], string[]]
+      const run = async (args: string[]) => {
+        try { return await $.process.run(['claude', ...args], { timeoutMs: 150_000, stdin: '' }) }
+        catch (err) { return { exitCode: -1, stdout: '', stderr: (err as Error).message } }
+      }
+      const last = (r: { stdout: string; stderr: string }) => `${r.stderr || r.stdout}`.trim().split('\n').filter(Boolean).pop()?.slice(0, 300) ?? 'no output'
+      const fallback = `In a terminal on this computer: claude plugin marketplace update ${market} && claude plugin update ${plugin}@${market}`
+      const m = await run(refresh)
+      if (m.exitCode !== 0) return `Couldn't refresh the ${market} marketplace (${last(m)}). ${fallback}`
+      const u = await run(upgrade)
+      if (u.exitCode !== 0) return `Couldn't update ${plugin} (${last(u)}). ${fallback}`
+      const v = await pluginVersion($)
+      return v.newer
+        ? `Installed Agent Chat ${v.newer} (this session runs ${v.loaded}). Run /reload-plugins to load it: you stay in your rooms.`
+        : `Agent Chat ${v.loaded} is the newest; nothing to load.`
     }
     case 'tasks': {
       const tasks = await readTasks($)

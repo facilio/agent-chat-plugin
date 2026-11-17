@@ -30,6 +30,11 @@ async function main() {
     assert.equal(holdsOnTaintedTurn(t, 'agent-chat'), false, `${t} runs`);
   assert.equal(holdsOnTaintedTurn('mcp__other__reply', 'agent-chat'), true, "another server's tool of the same name is held");
   assert.deepEqual(toolArgs({ tool: 'Bash', tool_use_id: 'x', agentId: 'a', command: 'ls' }), { command: 'ls' });
+  // /agent-chat update: which marketplace install this is, and what it runs
+  const inst = await import('../plugin/hooks/install');
+  assert.deepEqual(inst.marketplaceInstall('/Users/me/.claude/plugins/cache/facilio/agent-chat/0.11.3'), { market: 'facilio', plugin: 'agent-chat' });
+  assert.equal(inst.marketplaceInstall('/Users/me/src/agent-chat-plugin/plugin'), null, 'a dev checkout is not');
+  assert.deepEqual(inst.updateCommands({ market: 'facilio', plugin: 'agent-chat' }), [['plugin', 'marketplace', 'update', 'facilio'], ['plugin', 'update', 'agent-chat@facilio']]);
   // reads: inside the project free on a held turn; outside, or private data, waits
   const rs = await import('../plugin/hooks/readscope');
   const R = '/Users/me/work/app', H = '/Users/me';
