@@ -23,7 +23,8 @@ import type { Approval, ChatState, TaskRec } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
-import { OWNER_ACTS, holdsOnTaintedTurn, toolArgs } from './hold.ts'
+import { OWNER_ACTS, READ_TOOLS, holdsOnTaintedTurn, toolArgs } from './hold.ts'
+import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
 type $ = EngineInterface
@@ -226,7 +227,7 @@ async function ensureBridge($: $): Promise<void> {
           void ensureBridge($).catch(() => $.ui.status('💬 Agent Chat: offline — /agent-chat status'))
         }
       }
-    })()
+    })().catch(() => { /* the loop's own end: nothing more to do */ })
     await isReady
   })()
   try { await starting } catch (e) { bridge = null; throw e } finally { starting = null }
@@ -345,11 +346,41 @@ const saveTask = ($: $, t: TaskRec) => update($, chat, v => ({ ...v, tasks: [...
 const ownerName = () => lastStatus?.me?.ownerName ?? 'your owner'
 const ownerFirst = () => ownerName().split(' ')[0]
 
+// A task's call that the session's normal permissions decide. In a mode that
+// asks a person (default, acceptEdits, plan), a plugin can't answer that
+// prompt for the owner (the organization's policy keeps it in the terminal),
+// so the room and the owner's devices are told the task waits for their OK
+// there, until the call goes on.
+async function runTaskCall($: $, task: TaskRec, e: any, next: any) {
+  const mode = task.mode ?? ''
+  if (!mode || ['auto', 'bypassPermissions', 'dontAsk'].includes(mode)) return next(e)
+  let asks = false
+  try { asks = (await $.tool.check({ tool: e.tool, input: toolArgs(e) } as any)).decision === 'ask' } catch { /* unknown: no signal */ }
+  if (!asks) return next(e)
+  setWorking($, task.roomId, true, 'waiting')
+  $.ui.log(`Agent Chat: task ${task.id} in #${task.roomName} is waiting for your OK on ${e.tool}, in this terminal.`)
+  void $.ui.notify(`Task in #${task.roomName} is waiting for your OK on ${e.tool} in Claude Code.`, { title: 'Agent Chat' }).catch(() => {})
+  try { return await next(e) } finally { setWorking($, task.roomId, false) }
+}
+
 // The Agent call this plugin's own $.agent.spawn makes for a task it is starting.
 function isOwnTaskSpawn(tool: string, input: any): boolean {
   if (tool !== 'Agent' || input?.subagent_type !== `${NAME}:${TASK_AGENT}`) return false
   const id = /^Agent Chat task (tk_[a-z0-9]{12}) /.exec(String(input?.prompt ?? ''))?.[1]
   return !!id && spawning.has(id)
+}
+
+// Where this session's project is, and the owner's home: what readscope.ts
+// measures reads against. Asked once.
+let places: Promise<{ root: string; home: string }> | null = null
+function whereAmI($: $) {
+  places ??= (async () => {
+    const repo = await $.session.repo().catch(() => null)
+    const root = repo?.root ?? await $.session.root()
+    const home = String((await $.env.get('HOME').catch(() => '')) || '')
+    return { root, home }
+  })().catch(e => { places = null; throw e })
+  return places
 }
 
 // The task a tool call belongs to, by the loop that made it.
@@ -632,7 +663,7 @@ async function ensureTools($: $, all = false): Promise<void> {
 }
 // The repair from a hook that a turn waits on: at most 3 s, then the turn goes
 // ahead and the tools show up when they're back.
-const ensureToolsSoon = ($: $) => Promise.race([ensureTools($).catch(() => {}), $.clock.sleep(3000)])
+const ensureToolsSoon = ($: $) => Promise.race([ensureTools($).catch(() => {}), $.clock.sleep(3000).catch(() => {})])
 
 const OWNER_ACTIONS = new Set(['create_room', 'add_members'])
 
@@ -1028,11 +1059,27 @@ export const register: Register = on => {
         if (task.state === 'stopping') return notRun('This task was stopped. Finish now without doing anything more.')
         if (Date.now() - task.startedAt > TASK_MAX_MS) { void stopTask($, task, 'time limit').catch(() => {}); return notRun(`This task ran past ${TASK_MAX_MS / 3600_000} hours and is being stopped.`) }
         if (own === 'start_task') return notRun('A task cannot start another task.')
-        if (!OWNER_ACTS.has(own)) return next(e)
-        why = `task ${task.id} in #${task.roomName}; acting as your owner always waits for them`
+        if (OWNER_ACTS.has(own)) why = `task ${task.id} in #${task.roomName}; acting as your owner always waits for them`
+        else {
+          // The owner's private data (Claude memory, keys, credentials) waits
+          // for them even inside a task they approved (readscope.ts).
+          const { root, home } = await whereAmI($)
+          const priv = taskPrivateAccess(e.tool, toolArgs(e as any), root, home)
+          if (!priv) return runTaskCall($, task, e, next)
+          why = `task ${task.id} in #${task.roomName}: ${priv}`
+        }
       } else {
         if (e.agentId && ((await read($, chat)).endedAgents ?? []).includes(e.agentId)) return notRun('This task has ended.')
-        if (!holdsOnTaintedTurn(e.tool, NAME) || !(await isTainted($))) return next(e)
+        if (!(await isTainted($))) return next(e)
+        if (!holdsOnTaintedTurn(e.tool, NAME)) {
+          // Reads run unasked on a held turn only inside this session's
+          // project, and never of secret-looking files (readscope.ts).
+          if (!READ_TOOLS.has(e.tool)) return next(e)
+          const { root, home } = await whereAmI($)
+          const outside = heldTurnRead(e.tool, toolArgs(e as any), root, home)
+          if (!outside) return next(e)
+          why = `a room message started this turn, and ${outside}`
+        }
       }
       const args = toolArgs(e as any)
       if (!bridge || lastStatus?.state !== 'online') return notRun(`This needs your owner's OK (${why}), and Agent Chat isn't connected to ask.`)
@@ -1133,6 +1180,8 @@ export const register: Register = on => {
     if (e.subagentType === `${NAME}:${TASK_AGENT}`) {
       const id = /^Agent Chat task (tk_[a-z0-9]{12}) /.exec(e.prompt)?.[1]
       if (!id || !spawning.has(id)) return { deny: 'Only the agent-chat plugin starts Agent Chat tasks (start_task, or an approved ask_owner).' }
+      // The permission mode the task inherits (runTaskCall signals asks in modes that prompt a person).
+      if (e.permissionMode) await update($, chat, v => ({ ...v, tasks: (v.tasks ?? []).map(t => t.id === id ? { ...t, mode: e.permissionMode } : t) }))
       return next(e)
     }
     // A task's subagent starting one of its own: it works under the same task.
@@ -1241,7 +1290,7 @@ export const register: Register = on => {
     // Tell the rooms this session is gone (a network drop says nothing: the
     // session reconnects). Best effort, and quick: quitting must not wait on it.
     if (bridge && (await read($, chat)).joined.length) {
-      await Promise.race([bridgeCall($, 'POST', '/leave', { reason: 'exit' }).catch(() => {}), $.clock.sleep(1500)])
+      await Promise.race([bridgeCall($, 'POST', '/leave', { reason: 'exit' }).catch(() => {}), $.clock.sleep(1500).catch(() => {})])
     }
     bridge?.stop()
     return next(e)

@@ -21,6 +21,9 @@ function engine(on: any) {
   const seed = (key: string, value: unknown) => { kept.set(key, { value, version: (kept.get(key)?.version ?? 0) + 1 }) }
   on('state.get', (_: any, e: any) => ({ value: kept.get(e.key) ?? { value: undefined, version: 0 } }))
   on('state.set', (_: any, e: any) => { seed(e.key, e.value); return { value: { isSet: true, version: kept.get(e.key)!.version } } })
+  on('session.repo', () => ({ value: { root: '/Users/me/work/app', name: 'app' } }))
+  on('session.root', () => ({ value: '/Users/me/work/app' }))
+  on('env.get', (_: any, e: any) => ({ value: e.name === 'HOME' || e.key === 'HOME' ? '/Users/me' : undefined }))
   return { seed: (v: unknown) => seed(CHAT.key, v), get: () => kept.get(CHAT.key)?.value }
 }
 const ran = (r: any) => !r?.isError && r?.text !== undefined ? r.text === 'ran' || r.result === 'ran' : r?.result === 'ran'
@@ -102,4 +105,30 @@ test('after a plugin update (empty state), the session comes back to its rooms',
   const got: any = st.get()
   expect(got?.value?.sessionId).toBe('ss_kept')
   expect(got?.value?.joined).toEqual(['rm_9'])
+})
+
+test("a held turn reads its own project unasked; anything outside it, or private data, waits", async ($, on) => {
+  engine(on).seed(chatWith({}))
+  expect(ran(await $.tool.call({ tool: 'Read', file_path: 'src/a.ts' } as any))).toBe(true)
+  expect(ran(await $.tool.call({ tool: 'Grep', pattern: 'x' } as any))).toBe(true)
+  for (const input of [{ tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/MEMORY.md' }, { tool: 'Read', file_path: '/Users/me/other/notes.md' }, { tool: 'Read', file_path: '.env' }, { tool: 'Glob', pattern: '/Users/me/.ssh/*' }]) {
+    const r: any = await $.tool.call(input as any)
+    expect(ran(r)).toBe(false)
+    expect(String(r.text ?? r.deny ?? '')).toMatch(/NOT run/)
+  }
+})
+
+test("an untainted turn (the owner's own) reads anywhere", async ($, on) => {
+  engine(on).seed(chatWith({ tainted: false }))
+  expect(ran(await $.tool.call({ tool: 'Read', file_path: '/Users/me/.claude/CLAUDE.md' } as any))).toBe(true)
+})
+
+test("inside a task: work runs, the owner's private data waits", async ($, on) => {
+  engine(on).seed(chatWith({ tasks: [task()] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test', agentId: 'ag1' } as any))).toBe(true)
+  expect(ran(await $.tool.call({ tool: 'Read', file_path: '/tmp/out.log', agentId: 'ag1' } as any))).toBe(true)
+  for (const input of [{ tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/user.md' }, { tool: 'Bash', command: 'cat ~/.claude/CLAUDE.md' }, { tool: 'Bash', command: 'ls $HOME/.ssh' }]) {
+    const r: any = await $.tool.call({ ...input, agentId: 'ag1' } as any)
+    expect(ran(r)).toBe(false)
+  }
 })

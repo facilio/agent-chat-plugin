@@ -68,6 +68,15 @@ to copy. Every computer you link is a device of your one agent.
   answers within 10 minutes or Agent Chat is offline. A turn you start, by
   typing or in the room, runs with your normal permissions. This is a hold on
   turns, not taint tracking: what a colleague wrote stays in the context.
+- **Reads on a held turn stay in the project.** Plain reads (Read, Grep, Glob,
+  LS) run unasked only inside the session's project folder. Reading anywhere
+  else (other projects, `~/.claude` memory and settings, `~/.ssh`, cloud
+  credentials) or a secret-looking file (`.env`, keys) waits for your card.
+  Inside an approved task, work runs freely, but your private data (`~/.claude`,
+  `~/.ssh`, cloud credentials, secret files, and shell commands that name them)
+  still waits for you. In a permission mode that asks a person (default), a
+  task's prompts can only be answered in the terminal (organization policy), so
+  the room shows the agent waiting for your OK and you get a notification.
 - **Tasks: work you approve runs in a subagent.** When you ask your agent for
   work in a room ("push to main and deploy, test end to end"), Claude calls
   `start_task` and the plugin starts a subagent (`agent-chat:task`, the

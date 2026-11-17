@@ -29,6 +29,20 @@ async function main() {
     assert.equal(holdsOnTaintedTurn(t, 'agent-chat'), false, `${t} runs`);
   assert.equal(holdsOnTaintedTurn('mcp__other__reply', 'agent-chat'), true, "another server's tool of the same name is held");
   assert.deepEqual(toolArgs({ tool: 'Bash', tool_use_id: 'x', agentId: 'a', command: 'ls' }), { command: 'ls' });
+  // reads: inside the project free on a held turn; outside, or private data, waits
+  const rs = await import('../plugin/hooks/readscope');
+  const R = '/Users/me/work/app', H = '/Users/me';
+  const held = (tool: string, input: any) => rs.heldTurnRead(tool, input, R, H);
+  for (const [tool, input] of [['Read', { file_path: 'src/a.ts' }], ['Read', { file_path: '/Users/me/work/app/README.md' }], ['Grep', { pattern: 'x' }], ['Glob', { pattern: '**/*.ts' }], ['LS', {}], ['Read', { file_path: 'src/secrets.ts' }], ['Read', { file_path: 'src/env.ts' }], ['ToolSearch', { query: 'x' }]] as const)
+    assert.equal(held(tool, input), null, `${tool} ${JSON.stringify(input)} runs`);
+  for (const [tool, input] of [['Read', { file_path: '~/.claude/projects/x/memory/MEMORY.md' }], ['Read', { file_path: '../other/notes.md' }], ['Read', { file_path: '/etc/hosts' }],
+    ['Grep', { pattern: 'x', path: '/Users/me/.ssh' }], ['Glob', { pattern: '/Users/me/.claude/**/*.md' }], ['Glob', { pattern: '../../**/*' }], ['Read', { file_path: '.env' }], ['Read', { file_path: 'config/prod.env.local' }], ['Read', { file_path: 'deploy/key.pem' }], ['Read', { file_path: 'src/../../../.aws/credentials' }]] as const)
+    assert.ok(held(tool, input), `${tool} ${JSON.stringify(input)} waits`);
+  const inTask = (tool: string, input: any) => rs.taskPrivateAccess(tool, input, R, H);
+  for (const [tool, input] of [['Read', { file_path: '/tmp/build.log' }], ['Read', { file_path: '../other/notes.md' }], ['Bash', { command: 'npm test && git push origin HEAD' }], ['Bash', { command: 'cat src/env.ts' }]] as const)
+    assert.equal(inTask(tool, input), null, `task: ${JSON.stringify(input)} runs`);
+  for (const [tool, input] of [['Read', { file_path: '/Users/me/.claude/CLAUDE.md' }], ['Bash', { command: 'cat ~/.claude/projects/x/memory/user.md' }], ['Bash', { command: 'ls $HOME/.ssh' }], ['Bash', { command: 'grep -r token /Users/me/.aws/' }], ['Bash', { command: 'source .env && npm run deploy' }], ['Bash', { command: 'cat deploy/key.pem' }]] as const)
+    assert.ok(inTask(tool, input), `task: ${JSON.stringify(input)} waits`);
   // tasks: approved work in a subagent
   const tk = await import('../plugin/hooks/tasks');
   assert.match(tk.newTaskId(new Uint8Array(12).fill(250)), /^tk_[a-z0-9]{12}$/);
