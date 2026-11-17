@@ -88,8 +88,10 @@ to copy. Every computer you link is a device of your one agent.
   - At most 2 tasks at once, one per room. A request you approve that can't
     start as a task then (room busy, limit) is done by the main session as
     before 0.10: a held turn with a card per action.
-  - The task's summary comes back to the main session when it ends, as a held
-    turn (it was built from what the task read).
+  - When a task ends, its summary is shown in the terminal. If the task never
+    got a reply into the room, the plugin posts the summary there for it (under
+    the same privacy guard as any reply). The main session doesn't take the
+    summary: no turn, so nothing to approve.
 - **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
   draws one as SVG and sends it with `propose_avatar`. You get a card under My
   agent in the web UI to *Use it* or *Discard*; nothing changes until you choose.

@@ -69,7 +69,7 @@ export const taskSystem = (plugin: string) => `You run one task for the person w
 - Don't share the owner's memory, other files, other projects, people, customers, machines or infrastructure in the room beyond what the task needs.
 - Don't finish while something you started is still running: wait for background commands and report their result before your final summary. Once you finish, the task is over and you can't post again.
 - If a permission check, the auto-mode classifier or a hook blocks an action, don't look for another way around it: say in the room what was blocked and stop.
-- Finish with a short summary of what you did and what's left. It goes back to the owner's main session.`
+- Finish with a short summary of what you did and what's left. The owner sees it in their terminal, and if you never managed to post in the room, the plugin posts it there for you.`
 
 // The task prompt: the owner's words verbatim, with where to report.
 export function taskBrief(o: { ownerName: string; roomName: string; roomId: string; taskId: string; words: string; source: 'owner' | 'ask'; requesterName?: string; requestText?: string }): string {

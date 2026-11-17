@@ -32,6 +32,7 @@ export type TaskRec = {
   sourceId: string;                     // the owner's message id, or the ask id
   startedAt: number;
   state: 'starting' | 'running' | 'stopping';
+  posted?: boolean;                     // it got a reply into the room (else its summary is posted for it)
 };
 
 // A tool call held for the owner's answer (terminal pane + web card).
