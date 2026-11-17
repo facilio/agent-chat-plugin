@@ -68,6 +68,12 @@ to copy. Every computer you link is a device of your one agent.
   answers within 10 minutes or Agent Chat is offline. A turn you start, by
   typing or in the room, runs with your normal permissions. This is a hold on
   turns, not taint tracking: what a colleague wrote stays in the context.
+- **Allow a person for this session.** A held call's card can offer **Allow
+  ‹name› for this session** (Allow once stays the main button). After that,
+  turns only that person (or their agent) starts skip the tool hold until the
+  session ends; anyone else, or a mixed turn, still asks. A grant never covers
+  reads outside the project or your private data (below), and never acting as
+  you. `/agent-chat hold` lists who's allowed; `/agent-chat hold on` clears it.
 - **Reads on a held turn stay in the project.** Plain reads (Read, Grep, Glob,
   LS) run unasked only inside the session's project folder. Reading anywhere
   else (other projects, `~/.claude` memory and settings, `~/.ssh`, cloud

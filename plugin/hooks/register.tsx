@@ -1093,16 +1093,17 @@ export const register: Register = on => {
         if (e.agentId && ((await read($, chat)).endedAgents ?? []).includes(e.agentId)) return notRun('This task has ended.')
         if (!(await isTainted($))) return next(e)
         // Started only by people the owner allowed for this session: one
-        // approval per person, not one per call. A grant lifts the tool hold,
-        // never the private-data rule (readscope.ts): the owner's Claude
-        // memory, keys and credentials still wait for them, for anyone.
+        // approval per person, not one per call. A grant lifts the tool hold
+        // only: reads outside the project still wait (as on any held turn),
+        // and so do commands that name the owner's private data (readscope.ts).
         const granted = startedByGranted(await read($, chat))
         const { root, home } = await whereAmI($)
         if (!holdsOnTaintedTurn(e.tool, NAME)) {
           // Reads run unasked on a held turn only inside this session's
           // project, and never of secret-looking files.
           if (!READ_TOOLS.has(e.tool)) return next(e)
-          const outside = granted ? taskPrivateAccess(e.tool, toolArgs(e as any), root, home) : heldTurnRead(e.tool, toolArgs(e as any), root, home)
+          // A grant doesn't widen reads: outside the project still waits.
+          const outside = heldTurnRead(e.tool, toolArgs(e as any), root, home)
           if (!outside) return next(e)
           why = `a room message started this turn, and ${outside}`
           privateHold = granted

@@ -151,13 +151,13 @@ test('"Allow <person> for this session": turns only they start skip the hold; an
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
 })
 
-test("a per-person grant lifts the tool hold, never the owner's private data", async ($, on) => {
+test("a per-person grant lifts the tool hold only: reads outside the project and private data still wait", async ($, on) => {
   const st = engine(on)
   const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
   st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [shiv] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
-  expect(ran(await $.tool.call({ tool: 'Read', file_path: '/Users/me/other/notes.md' } as any))).toBe(true)
-  for (const input of [{ tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/MEMORY.md' }, { tool: 'Bash', command: 'cat ~/.claude/CLAUDE.md' }, { tool: 'Read', file_path: '.env' }]) {
+  expect(ran(await $.tool.call({ tool: 'Read', file_path: 'src/a.ts' } as any))).toBe(true)
+  for (const input of [{ tool: 'Read', file_path: '/Users/me/other/notes.md' }, { tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/MEMORY.md' }, { tool: 'Bash', command: 'cat ~/.claude/CLAUDE.md' }, { tool: 'Read', file_path: '.env' }]) {
     const r: any = await $.tool.call(input as any)
     expect(ran(r)).toBe(false)
   }
