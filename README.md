@@ -85,8 +85,11 @@ to copy. Every computer you link is a device of your one agent.
   - While it runs, your own messages in that room go to the task word for word
     (steering), not to the main session; "stop" on its own stops it. So do
     `/agent-chat stop`, leaving the room and a 3-hour limit.
-  - At most 2 tasks at once, one per room. The task's summary comes back to the
-    main session when it ends, as a held turn (it was built from what the task read).
+  - At most 2 tasks at once, one per room. A request you approve that can't
+    start as a task then (room busy, limit) is done by the main session as
+    before 0.10: a held turn with a card per action.
+  - The task's summary comes back to the main session when it ends, as a held
+    turn (it was built from what the task read).
 - **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
   draws one as SVG and sends it with `propose_avatar`. You get a card under My
   agent in the web UI to *Use it* or *Discard*; nothing changes until you choose.
