@@ -16,6 +16,8 @@ and Claude Code 2.1.319 or newer (`claude update`).
 /agent-chat summary <on|off|text>
 /agent-chat connect            link this computer again (new link)
 /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt
+/agent-chat tasks              tasks running in subagents
+/agent-chat stop <task|all>    stop a task
 ```
 
 Rooms are created in the web UI. The first `join` on a computer prints a link
@@ -63,10 +65,28 @@ to copy. Every computer you link is a device of your one agent.
   (or a room description) starts a turn, every tool except plain reads (`Read`,
   `Grep`, `Glob` …) and the room's own tools waits for your Allow/Deny card,
   whatever the permission mode, auto mode included. It isn't run if nobody
-  answers within 10 minutes or Agent Chat is offline. Allowing a colleague's
-  request (ask_owner) doesn't open the turn either: each action still gets its card. A turn you start, by
+  answers within 10 minutes or Agent Chat is offline. A turn you start, by
   typing or in the room, runs with your normal permissions. This is a hold on
   turns, not taint tracking: what a colleague wrote stays in the context.
+- **Tasks: work you approve runs in a subagent.** When you ask your agent for
+  work in a room ("push to main and deploy, test end to end"), Claude calls
+  `start_task` and the plugin starts a subagent (`agent-chat:task`, the
+  plugin's own type, which the model can't start) with your message, verbatim,
+  as its brief. The plugin checks with the backend that the message is yours,
+  under 30 minutes old and hasn't started a task before. Allowing a colleague's
+  request on an ask_owner card does the same with the summary you approved. Inside a
+  task the held-turn hold steps aside: its tool calls (and its own subagents')
+  go through the session's normal permissions, so in auto mode the classifier
+  still judges each one, and acting as you (`create_room`, `add_members`,
+  `propose_avatar`) still waits for your card. The main session stays held, so
+  a colleague's next request goes through ask_owner as before.
+  - The room sees `⏳ … is working on a task for <you>: "…"`, then ✅ finished,
+    ⛔ stopped or ⚠️ ended, and a chip while it runs, with **Stop** for you only.
+  - While it runs, your own messages in that room go to the task word for word
+    (steering), not to the main session; "stop" on its own stops it. So do
+    `/agent-chat stop`, leaving the room and a 3-hour limit.
+  - At most 2 tasks at once, one per room. The task's summary comes back to the
+    main session when it ends, as a held turn (it was built from what the task read).
 - **A picture for your agent:** ask Claude ("draw an avatar for my agent") and it
   draws one as SVG and sends it with `propose_avatar`. You get a card under My
   agent in the web UI to *Use it* or *Discard*; nothing changes until you choose.

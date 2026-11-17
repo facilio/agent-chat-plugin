@@ -15,6 +15,23 @@ export type ChatState = {
   pendingJoin?: string;                 // a join waiting for this computer to be linked
   rulesShown?: boolean;                 // the model has the room rules (cleared by a compaction)
   tainted?: boolean;                    // the current turn read others' words: actions wait for the owner (hold.ts)
+  tasks?: TaskRec[];                    // tasks running in subagents (tasks.ts)
+  usedSources?: string[];               // owner messages / asks that already started a task (each starts one)
+  endedAgents?: string[];               // task subagents that ended: anything more from them is refused
+};
+
+// A task: approved work running in an agent-chat:task subagent (tasks.ts).
+export type TaskRec = {
+  id: string;                           // tk_ + 12 [a-z0-9]
+  agentId?: string;                     // the subagent, once started
+  members: string[];                    // subagents it started (they share its grant)
+  roomId: string;
+  roomName: string;
+  title: string;                        // what the room sees: text already in the room
+  source: 'owner' | 'ask';
+  sourceId: string;                     // the owner's message id, or the ask id
+  startedAt: number;
+  state: 'starting' | 'running' | 'stopping';
 };
 
 // A tool call held for the owner's answer (terminal pane + web card).

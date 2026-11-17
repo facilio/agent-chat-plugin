@@ -70,6 +70,10 @@ const rooms = new Map<string, RoomSummary>();       // summaries of joined rooms
 let cursors: Record<string, string> = {};
 const unseen = new Map<string, ChatMessage[]>();   // delivered but didn't wake: context for the next wake
 const briefed = new Map<string, string>();         // the room description Claude was last shown, per room
+// Every message seen per room (woke or not), newest last: where start_task
+// looks up the owner's message by id before falling back to history.
+const recent = new Map<string, ChatMessage[]>();
+const RECENT_PER_ROOM = 200;
 let state: 'starting' | 'pairing' | 'connecting' | 'online' | 'offline' | 'stopped' = 'starting';
 let stopped: string | null = null;
 let pairing: { url: string; code: string } | null = null;
@@ -134,7 +138,11 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   // carries no room description. Anything else makes it a held turn (hold.ts).
   const ownerOnly = (m: ChatMessage) => m.authorKind === 'system' || (m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail);
   const trusted = !about.length && [...context, ...woke].every(ownerOnly);
-  emit({ type: 'wake', roomId, addressed, trusted, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  // Only the owner's own words, verbatim: what the plugin may hand a running
+  // task of this room as the owner's steering (never anyone else's).
+  const fromOwner = woke.every((m) => m.authorKind === 'user' && ownerOnly(m))
+    ? { messageIds: woke.map((m) => m.id), text: woke.map((m) => withFiles(m)).join('\n') } : undefined;
+  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -149,6 +157,10 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
   const addressedRooms = new Set<string>();
   for (const { message, wake, addressed } of items) {
     advance(message.roomId, message.id);
+    const seen = recent.get(message.roomId) ?? [];
+    seen.push(message);
+    if (seen.length > RECENT_PER_ROOM) seen.splice(0, seen.length - RECENT_PER_ROOM);
+    recent.set(message.roomId, seen);
     if (me && message.authorKind === 'agent' && message.authorId === me.id && message.session === session?.label) continue;
     if (wake) {
       if (addressed) addressedRooms.add(message.roomId);
@@ -274,7 +286,7 @@ function connect(token: string) {
         if (joined.has(f.room.id)) rooms.set(f.room.id, f.room);
         break;
       case 'room_removed':
-        joined.delete(f.roomId); rooms.delete(f.roomId); unseen.delete(f.roomId); briefed.delete(f.roomId);
+        joined.delete(f.roomId); rooms.delete(f.roomId); unseen.delete(f.roomId); briefed.delete(f.roomId); recent.delete(f.roomId);
         status(`Removed from #${f.roomId}`);
         break;
       case 'agent':
@@ -285,6 +297,12 @@ function connect(token: string) {
         // backend only after checking the clicker owns this agent.
         const a = f.ask;
         const allowed = a.status === 'allow';
+        // Allowed: the plugin runs it as a task (a subagent) with the summary the
+        // owner approved as its brief, so the main session doesn't do it too.
+        if (allowed) {
+          emit({ type: 'task_request', source: 'ask', roomId: a.roomId, roomName: a.roomName, askId: a.askId, messageId: a.messageId, summary: a.summary, requestText: a.requestText, requesterName: a.requesterName });
+          break;
+        }
         emit({
           // Still a held turn: the owner allowed one summary, not the whole turn,
           // and the colleague's request is quoted in it. Each action gets its card.
@@ -297,6 +315,11 @@ function connect(token: string) {
         });
         break;
       }
+      case 'task_stop':
+        // Only the backend can put frames on this socket, and it sends a stop
+        // only after checking the clicker owns this agent.
+        emit({ type: 'task_stop', roomId: f.roomId, taskId: f.taskId });
+        break;
       case 'permission_verdict':
         // Only the backend can put frames on this authenticated socket, and it
         // only sends a verdict after checking the clicker owns this agent.
@@ -451,7 +474,7 @@ const routes: Record<string, Handler> = {
   },
   'POST /leave': async (b) => {
     const r = await call({ action: 'leave', roomId: b.roomId || undefined, reason: b.reason === 'exit' ? 'exit' : undefined }) as { left: string[] };
-    for (const id of r.left) { joined.delete(id); unseen.delete(id); }
+    for (const id of r.left) { joined.delete(id); unseen.delete(id); recent.delete(id); }
     status();
     return { left: r.left.map((id) => ({ id, name: rooms.get(id)?.name ?? id })) };
   },
@@ -462,6 +485,22 @@ const routes: Record<string, Handler> = {
     return r;
   },
   'POST /history': async (b) => call({ action: 'history', roomId: String(b.roomId), limit: b.limit, before: b.before }),
+  // One message by id, and whether this session's owner wrote it (the backend
+  // sets the author; nothing the model says can). From what this session saw,
+  // else from the room's history.
+  'POST /message': async (b) => {
+    const roomId = String(b.roomId), id = String(b.messageId);
+    let m = recent.get(roomId)?.find((x) => x.id === id);
+    if (!m) {
+      // Messages up to and including `id` (ids sort by time; '~' sorts after any id char).
+      const got = await call({ action: 'history', roomId, before: `${id}~`, limit: 1 }) as ChatMessage[];
+      m = got.find((x) => x.id === id);
+    }
+    if (!m) throw Object.assign(new Error('No such message in that room'), { code: 'no_message' });
+    return { message: m, isOwner: m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail };
+  },
+  // A task this session runs in a subagent: running / done / stopped / failed.
+  'POST /task': async (b) => call({ action: 'task', roomId: String(b.roomId), taskId: String(b.taskId), title: String(b.title ?? ''), state: String(b.state) }),
   'POST /session': async (b) => {
     const s = await call({ action: 'session', label: b.label, summary: b.summary }) as SessionRef;
     session = s; status();

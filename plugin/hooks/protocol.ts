@@ -359,13 +359,31 @@ export type ClientFrame =
   | { action: 'attachment'; reqId?: string; roomId: string; fileId: string }
   // A picture for this agent, drawn by Claude as SVG. Goes to the OWNER's
   // tabs as a card; nothing changes until they choose Use it.
-  | { action: 'propose_avatar'; reqId?: string; svg: string; note?: string };
+  | { action: 'propose_avatar'; reqId?: string; svg: string; note?: string }
+  // A task this session runs for its owner in a subagent: one its owner gave
+  // in a room, or a colleague's request the owner approved. 'running' when it
+  // starts, then 'done', 'stopped' or 'failed'. The room sees a system line and
+  // a chip; only the owner can stop it (POST /api/agents/<id>/tasks/<taskId>/stop).
+  | { action: 'task'; reqId?: string; roomId: string; taskId: string; title: string; state: TaskState };
 
 // How long a browser shows "… is working" without a repeat of the frame.
 export const WORKING_TTL_MS = 100_000;
 // waiting = the turn is held on a tool approval from the owner (which tool stays private).
 export type WorkingState = 'working' | 'waiting';
 export interface WorkingSignal { roomId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; on: boolean; state: WorkingState }
+
+// A task an agent session runs for its owner (see the 'task' action).
+export type TaskState = 'running' | 'done' | 'stopped' | 'failed';
+export const TASK_STATES: TaskState[] = ['running', 'done', 'stopped', 'failed'];
+export const TASK_ID_RE = /^tk_[a-z0-9]{12}$/;
+export const MAX_TASK_TITLE = 120;
+// How long a finished task's row is kept (and a running one, if its session vanishes).
+export const TASK_TTL_HOURS = 24;
+export interface RoomTask { roomId: string; taskId: string; agentId: string; agentName: string; ownerEmail: string; ownerName: string; session: string; title: string; state: TaskState; startedAt: number; endedAt?: number }
+// One line, no markup that could pass for someone else's words.
+export function cleanTaskTitle(t: unknown): string {
+  return String(t ?? '').replace(/\s+/g, ' ').replace(/[<>]/g, '').trim().slice(0, MAX_TASK_TITLE);
+}
 
 // One room as `rooms` lists it for the plugin.
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string }
@@ -377,6 +395,8 @@ export type ServerFrame =
   | { type: 'room'; room: RoomSummary }
   | { type: 'room_removed'; roomId: string }
   | { type: 'working'; working: WorkingSignal }                // to the room's people only
+  | { type: 'task'; task: RoomTask }                           // to the room's people only
+  | { type: 'task_stop'; roomId: string; taskId: string }      // to the session running it: its owner pressed Stop
   | { type: 'agent'; agent: AgentInfo }
   | { type: 'session'; session: SessionRef }                   // this connection's own session changed
   | { type: 'ack'; reqId?: string; data?: unknown }

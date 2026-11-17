@@ -17,9 +17,13 @@
 export const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'ToolSearch', 'TodoWrite', 'TaskList', 'TaskGet'])
 
 // This plugin's own tools that a room turn needs. `reply` is guarded on its
-// own; create_room, add_members and propose_avatar act as the owner, so they
-// are held like any other action.
-export const ROOM_TOOLS = new Set(['reply', 'list_rooms', 'read_history', 'ask_owner', 'get_attachment'])
+// own; start_task starts work only from a message the backend says the owner
+// wrote (tasks.ts); create_room, add_members and propose_avatar act as the
+// owner, so they are held like any other action.
+export const ROOM_TOOLS = new Set(['reply', 'list_rooms', 'read_history', 'ask_owner', 'get_attachment', 'start_task'])
+
+// This plugin's tools that act as the owner: held even inside a task.
+export const OWNER_ACTS = new Set(['create_room', 'add_members', 'propose_avatar'])
 
 export function holdsOnTaintedTurn(tool: string, plugin: string): boolean {
   if (READ_TOOLS.has(tool)) return false
