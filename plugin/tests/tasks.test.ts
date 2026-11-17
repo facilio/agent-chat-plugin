@@ -65,3 +65,20 @@ test('only the plugin starts an agent-chat:task subagent', async ($, on) => {
   expect(r.agentId).toBeUndefined()
   expect(String(r.deny)).toMatch(/Only the agent-chat plugin/)
 })
+
+test("a task's report coming back holds the turn that reads it", async ($, on) => {
+  const st = engine(on)
+  on('prompt.submit', (_: any, e: any) => ({ text: e.text }))
+  st.seed(chatWith({ tainted: false, endedAgents: ['ag1'] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(true)
+  await $.prompt.submit({ text: '<agent-message from="ag1">\n[Subagent hand-back] all done', origin: { kind: 'peer' } } as any)
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+})
+
+test("another agent's peer message doesn't count as a task's report", async ($, on) => {
+  const st = engine(on)
+  on('prompt.submit', (_: any, e: any) => ({ text: e.text }))
+  st.seed(chatWith({ tainted: false, endedAgents: ['ag1'] }))
+  await $.prompt.submit({ text: '<agent-message from="someone-else">\nhello', origin: { kind: 'peer' } } as any)
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(true)
+})

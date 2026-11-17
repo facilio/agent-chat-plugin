@@ -208,13 +208,20 @@ async function main() {
     assert.deepEqual(ownWake.fromOwner, { messageIds: ['zz00000057'], text: 'go' });
     assert.equal(ownWake.roomName, 'general');
     // start_task looks a message up by id; the backend's author decides who wrote it
-    assert.deepEqual([(await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000057' })).data.isOwner, (await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000056' })).data.isOwner], [true, false]);
+    const own57 = (await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000057' })).data;
+    assert.deepEqual([own57.isOwner, own57.addressed], [true, true]);
+    assert.equal((await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000056' })).data.isOwner, false);
+    // the owner talking to someone else: theirs, but not addressed to this session
+    sock.send(JSON.stringify({ type: 'message', message: msg('zz0000005y', 'try now @other', mineOnly), wake: false, addressed: false }));
+    await new Promise((r) => setTimeout(r, 30));
+    const aside = (await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz0000005y' })).data;
+    assert.deepEqual([aside.isOwner, aside.addressed], [true, false], "start_task can't use an aside");
     const histF = nextFrame();
     const missing = cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000001' });
     const hf = await histF;
     assert.deepEqual([hf.action, hf.roomId, hf.before, hf.limit], ['history', 'rm_1', 'zz00000001~', 1], 'falls back to the room history');
     reply(hf, [msg('zz00000001', 'old ask', mineOnly)]);
-    assert.equal((await missing).data.isOwner, true);
+    assert.deepEqual([(await missing).data.isOwner, (await missing).data.addressed], [true, false], 'from history, never counted as addressed');
     const goneF = nextFrame();
     const gone = cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000002' });
     reply(await goneF, []);
@@ -263,6 +270,7 @@ async function main() {
     sock.send(JSON.stringify({ type: 'ask_decision', ask: { askId: 'ak_1', agentId: 'ag_a', agentName: 'owner-ai', roomId: 'rm_1', roomName: 'general', messageId: 'zz0000001', requesterName: 'Colleague', requestText: 'check prod', summary: 'run the check', createdAt: 0, expiresAt: 0, status: 'allow' } }));
     const dec = await decP;
     assert.deepEqual([dec.source, dec.roomId, dec.roomName, dec.askId, dec.summary, dec.requestText, dec.requesterName], ['ask', 'rm_1', 'general', 'ak_1', 'run the check', 'check prod', 'Colleague']);
+    assert.match(dec.fallbackWake, /decision="allow"[\s\S]*could not start as a task, so do it here/, "if it can't be a task, the main session does it under cards");
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(events.filter((e) => e.type === 'wake' && /ak_1/.test(e.text)).length, 0, 'no wake for an Allow');
     const dec2P = nextEvent((e) => e.type === 'wake' && /ak_2/.test(e.text));

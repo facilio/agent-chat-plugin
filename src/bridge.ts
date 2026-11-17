@@ -74,6 +74,7 @@ const briefed = new Map<string, string>();         // the room description Claud
 // looks up the owner's message by id before falling back to history.
 const recent = new Map<string, ChatMessage[]>();
 const RECENT_PER_ROOM = 200;
+const addressedIds = new Set<string>();            // messages the backend delivered to this session as addressed to it
 let state: 'starting' | 'pairing' | 'connecting' | 'online' | 'offline' | 'stopped' = 'starting';
 let stopped: string | null = null;
 let pairing: { url: string; code: string } | null = null;
@@ -161,6 +162,7 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
     seen.push(message);
     if (seen.length > RECENT_PER_ROOM) seen.splice(0, seen.length - RECENT_PER_ROOM);
     recent.set(message.roomId, seen);
+    if (wake && addressed) { addressedIds.add(message.id); if (addressedIds.size > 2000) addressedIds.delete(addressedIds.values().next().value!); }
     if (me && message.authorKind === 'agent' && message.authorId === me.id && message.session === session?.label) continue;
     if (wake) {
       if (addressed) addressedRooms.add(message.roomId);
@@ -299,20 +301,19 @@ function connect(token: string) {
         const allowed = a.status === 'allow';
         // Allowed: the plugin runs it as a task (a subagent) with the summary the
         // owner approved as its brief, so the main session doesn't do it too.
+        const decisionText = `<agent-chat room_id="${attr(a.roomId)}" room="${attr(a.roomName)}" from="${attr(me?.ownerName ?? 'owner')}" from_kind="user" from_is_owner="true" status="owner_decision" decision="${allowed ? 'allow' : 'deny'}" ask_id="${attr(a.askId)}" message_id="${attr(a.messageId)}">\n`
+          + inert(`Your owner ${allowed ? 'APPROVED' : 'DECLINED'} ${a.requesterName}'s request in #${a.roomName}: "${a.requestText}"\n`
+          + `You had said you would: ${a.summary}\n`)
+          + (allowed ? 'It could not start as a task, so do it here: go ahead with exactly that (each action still gets its own card), then reply in the room with the result.' : 'Do not do it. Reply in the room that your owner declined.')
+          + '\n</agent-chat>';
         if (allowed) {
-          emit({ type: 'task_request', source: 'ask', roomId: a.roomId, roomName: a.roomName, askId: a.askId, messageId: a.messageId, summary: a.summary, requestText: a.requestText, requesterName: a.requesterName });
+          // Still a held turn if it falls back here: the owner allowed one
+          // summary, not the whole turn, and the colleague's request is quoted.
+          emit({ type: 'task_request', source: 'ask', roomId: a.roomId, roomName: a.roomName, askId: a.askId, messageId: a.messageId, summary: a.summary, requestText: a.requestText, requesterName: a.requesterName, fallbackWake: decisionText });
           break;
         }
-        emit({
-          // Still a held turn: the owner allowed one summary, not the whole turn,
-          // and the colleague's request is quoted in it. Each action gets its card.
-          type: 'wake', roomId: a.roomId, addressed: true, trusted: false,
-          text: `<agent-chat room_id="${attr(a.roomId)}" room="${attr(a.roomName)}" from="${attr(me?.ownerName ?? 'owner')}" from_kind="user" from_is_owner="true" status="owner_decision" decision="${allowed ? 'allow' : 'deny'}" ask_id="${attr(a.askId)}" message_id="${attr(a.messageId)}">\n`
-            + inert(`Your owner ${allowed ? 'APPROVED' : 'DECLINED'} ${a.requesterName}'s request in #${a.roomName}: "${a.requestText}"\n`
-            + `You had said you would: ${a.summary}\n`)
-            + (allowed ? 'Go ahead with exactly that, then reply in the room with the result.' : 'Do not do it. Reply in the room that your owner declined.')
-            + '\n</agent-chat>',
-        });
+        // Declined: Claude says so in the room (a held turn: the colleague's request is quoted).
+        emit({ type: 'wake', roomId: a.roomId, addressed: true, trusted: false, text: decisionText });
         break;
       }
       case 'task_stop':
@@ -497,7 +498,7 @@ const routes: Record<string, Handler> = {
       m = got.find((x) => x.id === id);
     }
     if (!m) throw Object.assign(new Error('No such message in that room'), { code: 'no_message' });
-    return { message: m, isOwner: m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail };
+    return { message: m, isOwner: m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail, addressed: addressedIds.has(m.id) };
   },
   // A task this session runs in a subagent: running / done / stopped / failed.
   'POST /task': async (b) => call({ action: 'task', roomId: String(b.roomId), taskId: String(b.taskId), title: String(b.title ?? ''), state: String(b.state) }),

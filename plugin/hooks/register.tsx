@@ -236,9 +236,10 @@ async function onEvent($: $, ev: any) {
       return
     }
     case 'wake':
-      // The owner talking in a room where a task runs steers that task: their
-      // words go to it verbatim ("stop" ends it), and the main session isn't woken.
-      if (ev.fromOwner && ev.roomId && (await steerTask($, ev))) return
+      // The owner talking to this agent in a room where a task runs steers that
+      // task: their words go to it verbatim ("stop" ends it), and the main
+      // session isn't woken. Not when they're talking to someone else.
+      if (ev.fromOwner && ev.addressed === true && ev.roomId && (await steerTask($, ev))) return
       wakes.push({ text: ev.text, trusted: ev.trusted === true })
       if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
@@ -387,14 +388,19 @@ async function steerTask($: $, ev: any): Promise<boolean> {
 
 // A colleague's request the owner approved: run it as a task.
 async function onTaskRequest($: $, ev: any) {
+  const who = String(ev.requesterName ?? 'a colleague').split(' (')[0]
   const r = await startTask($, {
-    roomId: String(ev.roomId), roomName: String(ev.roomName ?? ev.roomId), words: String(ev.summary ?? ''), title: String(ev.requestText ?? ev.summary ?? ''),
+    // The title is the plugin's own words: the room's system line shouldn't
+    // carry a colleague's text as if the system said it.
+    roomId: String(ev.roomId), roomName: String(ev.roomName ?? ev.roomId), words: String(ev.summary ?? ''), title: `${who}'s request, approved`,
     source: 'ask', sourceId: String(ev.askId), requesterName: ev.requesterName, requestText: ev.requestText,
   })
-  if (r.error) {
-    $.ui.log(`Agent Chat: you approved a request in #${ev.roomName}, but it couldn't start: ${r.error}.`)
-    await bridgeCall($, 'POST', '/send', { roomId: ev.roomId, text: `${ownerFirst()} approved this, but I couldn't start it: ${r.error}. Ask again once that's cleared.` }).catch(() => {})
-  }
+  if (!r.error) return
+  // It can't run as a task (one already runs in that room, the limit, no
+  // task type here): the main session does it as before 0.10, a held turn
+  // where each action gets the owner's card.
+  $.ui.log(`Agent Chat: you approved a request in #${ev.roomName}; it runs here with a card per action, because it couldn't start as a task (${r.error}).`)
+  if (ev.fallbackWake) { wakes.push({ text: String(ev.fallbackWake), trusted: false }); void flushWakes($) }
 }
 
 // After a reload or a restart: tasks whose subagent is gone are closed.
@@ -563,7 +569,8 @@ async function runTool($: $, name: string, args: any): Promise<string> {
     }
     case 'start_task': {
       const roomId = String(args.room_id ?? ''), messageId = String(args.message_id ?? '')
-      const { message, isOwner } = await bridgeCall<any>($, 'POST', '/message', { roomId, messageId })
+      const { message, isOwner, addressed } = await bridgeCall<any>($, 'POST', '/message', { roomId, messageId })
+      if (isOwner && !addressed) return `Not started: that message of ${ownerFirst()}'s wasn't addressed to you (or this session didn't receive it). A task starts only from something ${ownerFirst()} asked you.`
       if (!isOwner) return `Not started: that message isn't ${ownerFirst()}'s. A colleague's request goes through ask_owner; if ${ownerFirst()} approves it, the task starts by itself.`
       if (Date.now() - Number(message.ts) > SOURCE_FRESH_MS) return `Not started: that message is more than ${SOURCE_FRESH_MS / 60_000} minutes old. Ask ${ownerFirst()} in the room to say it again if it's still wanted.`
       const roomName = (await read($, chat)).roomNames[roomId] ?? roomId
@@ -1066,6 +1073,14 @@ export const register: Register = on => {
 
   // The person's own prompts feed the session summary; nothing else does.
   on('prompt.submit', async ($, e, next) => {
+    // A task's report coming back (a peer message from its subagent, into
+    // whatever turn runs, or starting one): it was built from what the task
+    // read, so the turn that reads it is held like a room's.
+    if (e.origin.kind === 'peer') {
+      const from = /^<agent-message from="([^"]+)"/.exec(e.text)?.[1]
+      const s = await read($, chat)
+      if (from && ((s.endedAgents ?? []).includes(from) || taskOf(s.tasks ?? [], from))) await setTainted($, true)
+    }
     // A turn the person starts (or joins mid-turn) is theirs; ours are the wakes.
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') roomTurn = false
     // The owner starting a turn makes it theirs; joining a held one mid-turn doesn't.
@@ -1087,10 +1102,7 @@ export const register: Register = on => {
     // from what the task read, so that turn is held like a room's.
     if (e.agentId !== undefined) {
       const t = (await readTasks($)).find(x => x.agentId === e.agentId)
-      if (t) {
-        await finishTask($, t, t.state === 'stopping' || e.isAborted ? 'stopped' : 'done')
-        if (!busy) await setTainted($, true)
-      }
+      if (t) await finishTask($, t, t.state === 'stopping' || e.isAborted ? 'stopped' : 'done')
       return r
     }
     if (e.agentId === undefined) {
