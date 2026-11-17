@@ -150,7 +150,20 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   // task of this room as the owner's steering (never anyone else's).
   const fromOwner = woke.every((m) => m.authorKind === 'user' && ownerOnly(m))
     ? { messageIds: woke.map((m) => m.id), text: woke.map((m) => withFiles(m)).join('\n') } : undefined;
-  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  // Who's behind it (an agent counts as its owner), for a per-person grant.
+  // Null when it can't be pinned on people: a room description (any member
+  // edits it) or an author with no owner on record.
+  const people = new Map<string, string>();
+  let pinned = !about.length;
+  for (const m of [...context, ...woke]) {
+    if (ownerOnly(m)) continue;
+    const email = m.authorKind === 'agent' ? m.ownerEmail : m.authorId;
+    const name = m.authorKind === 'agent' ? m.ownerName : m.authorName;
+    if (!email || !name) { pinned = false; continue; }
+    people.set(email, name);
+  }
+  const from = pinned && people.size ? [...people].map(([email, name]) => ({ email, name })) : null;
+  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, from, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -196,7 +209,7 @@ const PENDING_TTL_MS = 10 * 60_000;
 const pendingPerms = new Map<string, { frame: Record<string, unknown>; at: number }>();
 const settle = (id: string) => { pendingPerms.delete(id); };
 const verdicts = new Map<string, string>();
-// 'session' when the owner chose Allow for this session (web card or pane).
+// 'person' when the owner chose Allow <person> for this session (web card or pane).
 const scopes = new Map<string, string>();
 
 function request(frame: Record<string, unknown>, timeoutMs = 15000): Promise<ServerFrame> {
@@ -344,7 +357,7 @@ function connect(token: string) {
         // only sends a verdict after checking the clicker owns this agent.
         if (f.behavior === 'allow' || f.behavior === 'deny') {
           settle(f.requestId);
-          if (f.behavior === 'allow' && f.scope === 'session') scopes.set(f.requestId, 'session');
+          if (f.behavior === 'allow' && f.scope === 'person') scopes.set(f.requestId, 'person');
           verdicts.set(f.requestId, f.behavior);
           for (const w of verdictWaiters.get(f.requestId) ?? []) w(f.behavior);
           verdictWaiters.delete(f.requestId);
@@ -581,7 +594,7 @@ const routes: Record<string, Handler> = {
   'POST /propose_avatar': async (b) => call({ action: 'propose_avatar', svg: String(b.svg ?? ''), note: b.note === undefined ? undefined : String(b.note) }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {
-    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash };
+    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash, ...(b.grantTo ? { grantTo: String(b.grantTo).slice(0, 120) } : {}) };
     pendingPerms.set(String(b.requestId), { frame, at: Date.now() });
     await call(frame);
     return { ok: true };
@@ -603,7 +616,7 @@ const routes: Record<string, Handler> = {
   'POST /permission/answer': async (b) => {
     const id = String(b.requestId);
     const behavior = String(b.behavior);
-    if (behavior === 'allow' && b.scope === 'session') scopes.set(id, 'session');
+    if (behavior === 'allow' && b.scope === 'person') scopes.set(id, 'person');
     settle(id);
     if (behavior === 'terminal') await call({ action: 'permission_cancel', requestId: id }).catch(() => {});
     else await call({ action: 'permission_answer', requestId: id, behavior, nonce: b.nonce }).catch(() => {});

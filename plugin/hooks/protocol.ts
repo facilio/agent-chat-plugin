@@ -209,8 +209,9 @@ export function sessionMatches(part: string, label: string | undefined): boolean
 // the plugin mints its own in the same shape).
 export const PERMISSION_ID_RE = /^[a-km-z]{5}$/;
 export type PermissionBehavior = 'allow' | 'deny';
-// 'session': the owner allowed it for the rest of that agent session (no more asks there).
-export type PermissionScope = 'session';
+// 'person': allowed, and turns that request's people start skip the hold for
+// the rest of that agent session (grantTo names them on the card).
+export type PermissionScope = 'person';
 
 export type AskDecision = 'allow' | 'deny';
 
@@ -240,6 +241,7 @@ export interface PermissionRequest {
   requestId: string;
   toolName: string;
   description: string;   // untrusted text: render as text, never HTML
+  grantTo?: string;      // who "Allow … for this session" would cover (names, from the backend's own records)
   inputPreview: string;  // untrusted text: render as text, never HTML
   createdAt: number;
   expiresAt: number;
@@ -343,7 +345,7 @@ export type ClientFrame =
   // A tool call in this session needs approval; the owner's tabs get a card.
   // nonceHash = sha256 of a secret only the plugin's own UI holds: answering
   // with the nonce (permission_answer) proves the answer came from the terminal.
-  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string; nonceHash?: string }
+  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string; nonceHash?: string; grantTo?: string }
   | { action: 'permission_answer'; reqId?: string; requestId: string; behavior: PermissionBehavior; nonce: string }
   | { action: 'permission_cancel'; reqId?: string; requestId: string }
   // A colleague asked this agent for something it won't do without its owner's OK.

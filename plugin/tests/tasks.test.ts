@@ -104,14 +104,20 @@ test('after a plugin update (empty state), the session comes back to its rooms',
   expect(got?.value?.joined).toEqual(['rm_9'])
 })
 
-test('after "Allow for this session", a held turn runs without asking again; /agent-chat hold on asks again', async ($, on) => {
+test('"Allow <person> for this session": turns only they start skip the hold; anyone else still asks', async ($, on) => {
   const st = engine(on)
-  st.seed(chatWith({ sessionGrant: true }))
+  const manthosh = { email: 'manthosh@facilio.com', name: 'Manthosh Kumar' }, shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [manthosh] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
-  expect(ran(await $.tool.call({ tool: 'Edit', file_path: 'a', old_string: 'x', new_string: 'y' } as any))).toBe(true)
-  // a subagent outside any task, on the granted session: runs too
-  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'other' } as any))).toBe(true)
-  // taken back: held again
-  st.seed(chatWith({ sessionGrant: false }))
+  // someone else in the turn (or only someone else): held
+  st.seed(chatWith({ turnFrom: [manthosh, shiv], grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // a turn that can't be pinned on people (a room description): held
+  st.seed(chatWith({ turnFrom: null, grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // /agent-chat hold on: nobody granted, held again
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
 })

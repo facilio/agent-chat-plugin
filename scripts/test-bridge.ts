@@ -177,6 +177,7 @@ async function main() {
     assert.match(wake2.text, /from="@bob-ai \(Bob's agent, session api:main:agent-b\)" from_kind="agent" from_is_owner="false" addressed="true"/);
     assert.doesNotMatch(wake2.text, /mine/);
     assert.equal(wake2.trusted, false, "another agent's message makes a held turn");
+    assert.equal(wake2.from, null, "an agent with no owner on record can't be pinned on a person: no per-person grant");
     // the room's description reaches Claude once, again only when it changes; the type is on every tag
     sock.send(JSON.stringify({ type: 'room', room: { ...room, type: 'project', description: 'Lunch plans\nand memes' } }));
     await new Promise((r) => setTimeout(r, 30));
@@ -203,8 +204,12 @@ async function main() {
     const theirs = await wakeOf('zz00000056', {});
     assert.equal(theirs.trusted, false, "a colleague's message");
     assert.equal(theirs.fromOwner, undefined, "only the owner's words can steer a task");
+    assert.deepEqual(theirs.from, [{ email: 'colleague@example.com', name: 'Colleague' }], "who's behind a colleague's message");
+    const agentsWake = await wakeOf('zz0000005a', { authorKind: 'agent', authorId: 'ag_b', authorName: 'bob-ai', ownerEmail: 'bob@example.com', ownerName: 'Bob', session: 'api:main:agent-b' });
+    assert.deepEqual(agentsWake.from, [{ email: 'bob@example.com', name: 'Bob' }], 'an agent counts as its owner');
     const ownWake = await wakeOf('zz00000057', mineOnly);
     assert.equal(ownWake.trusted, true, "the owner's own message");
+    assert.equal(ownWake.from, null, 'nobody else behind it');
     assert.deepEqual(ownWake.fromOwner, { messageIds: ['zz00000057'], text: 'go' });
     assert.equal(ownWake.roomName, 'general');
     // start_task looks a message up by id; the backend's author decides who wrote it
@@ -311,16 +316,18 @@ async function main() {
     sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'abcde', behavior: 'deny' }));
     assert.equal((await waiting).data.behavior, 'deny');
     assert.equal((await cmd('POST', '/permission/wait', { requestId: 'zzzzz', waitMs: 50 })).data.behavior, null, 'times out empty');
-    // "Allow for this session": the scope comes back with the verdict (web card or pane)
+    // "Allow <person> for this session": the card is told who, and the scope comes back with the verdict
     const sesF = nextFrame();
-    const ses = cmd('POST', '/permission', { requestId: 'sessn', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'c'.repeat(64) });
-    reply(await sesF, { requestId: 'sessn' });
+    const ses = cmd('POST', '/permission', { requestId: 'sessn', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'c'.repeat(64), grantTo: 'Manthosh Kumar' });
+    const sesFrame = await sesF;
+    assert.equal(sesFrame.grantTo, 'Manthosh Kumar', 'the request names who the grant would cover');
+    reply(sesFrame, { requestId: 'sessn' });
     await ses;
     const sesWait = cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 5000 });
     await new Promise((r) => setTimeout(r, 50));
-    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'sessn', behavior: 'allow', scope: 'session' }));
-    assert.deepEqual([(await sesWait).data.behavior, (await sesWait).data.scope], ['allow', 'session'], 'the session scope reaches the hook');
-    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 50 })).data.scope, 'session', 'and is kept for a late long-poll');
+    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'sessn', behavior: 'allow', scope: 'person' }));
+    assert.deepEqual([(await sesWait).data.behavior, (await sesWait).data.scope], ['allow', 'person'], 'the person scope reaches the hook');
+    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 50 })).data.scope, 'person', 'and is kept for a late long-poll');
     const onceF = nextFrame();
     const once = cmd('POST', '/permission', { requestId: 'oncex', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'd'.repeat(64) });
     reply(await onceF, { requestId: 'oncex' });
