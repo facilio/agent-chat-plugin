@@ -162,3 +162,12 @@ test("a per-person grant lifts the tool hold only: reads outside the project and
     expect(ran(r)).toBe(false)
   }
 })
+
+test('/agent-chat status names the loaded plugin version, and a newer one installed beside it', async ($, on) => {
+  engine(on).seed(chatWith({ joined: [] }))
+  on('fs.read', () => ({ value: '{"version":"0.11.2"}' }))
+  on('fs.list', () => ({ value: [{ name: '0.11.1', kind: 'dir', size: 0 }, { name: '0.11.2', kind: 'dir', size: 0 }, { name: '0.12.0', kind: 'dir', size: 0 }] }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'status' } as any)
+  expect(String(r.text)).toMatch(/plugin: 0\.11\.2 \(0\.12\.0 is installed: \/reload-plugins or a new session loads it\)/)
+})

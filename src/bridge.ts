@@ -25,7 +25,11 @@ import { FILE_ID_RE, MAX_FILE_BYTES, isAddressed, userHandle, type AgentInfo, ty
 
 // The plugin's version (plugin.json): the backend can require a minimum
 // (MIN_PLUGIN_VERSION) to move every session onto a release.
-const VERSION = '0.11.0';
+// The plugin's own manifest is the one source of the version (dist/bridge.cjs
+// sits in <plugin>/dist), so the bridge and /agent-chat status can't disagree.
+const VERSION: string = (() => {
+  try { return String(JSON.parse(readFileSync(join(__dirname, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version || '0.0.0'); } catch { return '0.0.0'; }
+})();
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
 const STATE_DIR = process.env.AGENT_CHAT_STATE_DIR || join(homedir(), '.claude', 'channels', 'agent-chat');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';

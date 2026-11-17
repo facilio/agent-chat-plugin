@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+const PLUGIN_VERSION = JSON.parse(readFileSync(join(__dirname, '..', 'plugin', '.claude-plugin', 'plugin.json'), 'utf8')).version;
 const owner = 'owner@example.com';
 const SECRET = 'test-secret-0123456789';
 const room = { id: 'rm_1', name: 'general', createdBy: owner, createdAt: 0, members: [{ kind: 'user', id: owner, name: 'Owner Person' }, { kind: 'user', id: 'colleague@example.com', name: 'Colleague' }, { kind: 'agent', id: 'ag_a', name: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person' }] };
@@ -96,7 +97,7 @@ async function main() {
   wss.on('connection', (s, req) => {
     connects++;
     assert.equal(req.headers.authorization, 'Bearer ac_paired');
-    assert.match(String(req.headers['user-agent']), /^agent-chat-plugin\/0\.11\./);
+    assert.equal(String(req.headers['user-agent']), `agent-chat-plugin/${PLUGIN_VERSION}`, 'the version comes from plugin.json');
     sock = s;
     s.on('message', (raw) => {
       const f = JSON.parse(String(raw));
@@ -154,7 +155,7 @@ async function main() {
 
     // 2. hello carries the session
     const hello = await helloP;
-    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.11.0', ['sessions']]);
+    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', PLUGIN_VERSION, ['sessions']]);
     assert.deepEqual(hello.session, { id: 'ss_test_session_1', label: 'agent-chat:main:mbp', rooms: [] });
     sock.send(JSON.stringify({ type: 'hello', reqId: hello.reqId, agent, session: { id: 'ss_test_session_1', label: 'agent-chat:main:mbp' }, rooms: [], missed: [] }));
     await nextEvent((e) => e.type === 'status' && e.state === 'online');

@@ -387,6 +387,27 @@ function whereAmI($: $) {
   return places
 }
 
+// This plugin's version, and the newest one installed beside it when the
+// marketplace has fetched a newer one this session hasn't loaded yet.
+async function pluginVersion($: $): Promise<{ loaded: string; newer?: string }> {
+  const ver = async (dir: string) => { try { return String(JSON.parse(await $.fs.read(`${dir}/.claude-plugin/plugin.json`)).version || '') } catch { return '' } }
+  const loaded = (await ver($.plugin.root)) || '?'
+  // Installed versions sit beside it (plugins/cache/<marketplace>/<plugin>/<version>);
+  // anywhere else the siblings aren't version numbers and are ignored.
+  const parent = $.plugin.root.replace(/\/[^/]+\/?$/, '')
+  const num = (v: string) => v.split('.').map(n => Number(n) || 0)
+  const newerThan = (a: string, b: string) => { const x = num(a), y = num(b); for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0); return false }
+  let newer: string | undefined
+  try {
+    for (const e of await $.fs.list(parent)) {
+      const v = String((e as any).name ?? '')
+      if (/^\d+\.\d+\.\d+$/.test(v) && newerThan(v, newer ?? loaded)) newer = v
+    }
+  } catch { /* can't look: say nothing */ }
+  return { loaded, newer }
+}
+const versionLine = (v: { loaded: string; newer?: string }) => `plugin: ${v.loaded}${v.newer ? ` (${v.newer} is installed: /reload-plugins or a new session loads it)` : ''}`
+
 // The task a tool call belongs to, by the loop that made it.
 async function taskForAgent($: $, agentId: string | undefined): Promise<TaskRec | undefined> {
   if (!agentId) return undefined
@@ -735,8 +756,8 @@ async function runTool($: $, name: string, args: any): Promise<string> {
     case 'whoami': {
       const st = await bridgeCall($, 'GET', '/status')
       return st.me
-        ? `agent: @${st.me.name} (${st.me.ownerName}'s agent)\nsession: ${st.session?.label}${st.session?.summary ? ` — ${st.session.summary}` : ''}\nrooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}\nstate: ${st.state}`
-        : `Not connected (${st.state}${st.message ? `: ${st.message}` : ''}).`
+        ? `agent: @${st.me.name} (${st.me.ownerName}'s agent)\nsession: ${st.session?.label}${st.session?.summary ? ` — ${st.session.summary}` : ''}\nrooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}\nstate: ${st.state}\n${versionLine(await pluginVersion($))}`
+        : `Not connected (${st.state}${st.message ? `: ${st.message}` : ''}). ${versionLine(await pluginVersion($))}`
     }
   }
   throw new Error(`unknown tool ${name}`)
@@ -901,11 +922,12 @@ async function command($: $, args: string): Promise<string> {
     case 'rooms':
       return runTool($, 'list_rooms', {})
     case 'status': {
-      if (!bridge) return 'Not connected. /agent-chat join <room> to start.'
+      if (!bridge) return `Not connected. /agent-chat join <room> to start. ${versionLine(await pluginVersion($))}`
       const st = await bridgeCall($, 'GET', '/status')
       const s = await read($, chat)
       return [
         `state: ${st.state}${st.message ? ` (${st.message})` : ''}`,
+        versionLine(await pluginVersion($)),
         st.me ? `agent: @${st.me.name} (${st.me.ownerName}'s agent)` : null,
         `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}`,
         `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
