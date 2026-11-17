@@ -253,7 +253,7 @@ async function flushWakes($: $) {
   await setTainted($, batch.some(w => !w.trusted))
   for (const r of wakeRooms) setWorking($, r, true)
   wakeRooms.clear()
-  await ensureTools($)
+  await ensureToolsSoon($)
   try { await $.prompt.submit({ text }) } catch (e) { busy = false; roomTurn = false; void setTainted($, false); for (const r of [...workingRooms]) setWorking($, r, false); $.ui.log(`Agent Chat: could not deliver a message (${(e as Error).message})`, { to: 'debug' }) }
 }
 
@@ -365,21 +365,46 @@ const TOOLS = [
   },
 ] as const
 
-// Registers every tool; a name registered again is replaced, so this is safe to
-// repeat. Registering only at session.start isn't enough: a session started over
-// Remote Control (rene, Claude Code 2.1.322, 2026-11-16) came up with the command
-// and room events working but no mcp__agent-chat__* tools and no error, so it
-// heard #Chillout and could never answer. Join and every room wake register again.
+// Registers the tools the model doesn't have ($.tool.list), or all of them at
+// session.start. Sessions have lost them with no error: one started over Remote
+// Control (rene, 2.1.322) came up with none, and ones started from the iOS app
+// (2.1.321) lost the whole tool server seconds into a turn ("Bubble redesign",
+// 2026-11-16). So join, every wake, every prompt while in a room, and a minute
+// timer put back whatever is missing; normally nothing is.
 // A refused tool (e.g. by org policy) is kept in toolProblems and shown, never dropped.
-async function ensureTools($: $): Promise<void> {
+// A repair that didn't take (agent-chat turned off in /mcp, say) isn't retried
+// for 5 minutes: each try waits up to 8 s for the tools to show.
+let repairFailedAt = 0
+const listed = ($: $) => $.tool.list().then(ts => new Set(ts.map(t => t.name))).catch(() => null)
+async function ensureTools($: $, all = false): Promise<void> {
+  let want: readonly (typeof TOOLS)[number][] = TOOLS
+  if (!all) {
+    const have = await listed($)
+    if (!have) return
+    want = TOOLS.filter(t => !have.has(T(t.name)))
+    if (!want.length) { repairFailedAt = 0; return }
+    if (Date.now() - repairFailedAt < 5 * 60_000) return
+  }
+  // One at a time: each register replaces the plugin's tool server, and nine at
+  // once (0.8.1-0.9.2) could leave it replaced and never reconnected on 2.1.321.
   const problems: string[] = []
-  await Promise.all(TOOLS.map(t =>
-    $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema as any })
-      .catch(err => { problems.push(`${t.name}: ${(err as Error).message}`) })))
+  for (const t of want) {
+    try { await $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema as any }) }
+    catch (err) { problems.push(`${t.name}: ${(err as Error).message}`) }
+  }
   const was = toolProblems.join('\n')
   toolProblems.splice(0, toolProblems.length, ...problems)
   if (problems.length && problems.join('\n') !== was) $.ui.log(`Agent Chat: ${problems.length} tool(s) could not be registered, so this session can't answer in rooms — ${problems[0]}`)
+  if (!all) {
+    const after = await listed($)
+    const still = after ? want.filter(t => !after.has(T(t.name))).length : 0
+    repairFailedAt = still ? Date.now() : 0
+    $.ui.log(`Agent Chat: ${want.length} tool(s) had gone from this session; registered them again${still ? `, but ${still} still missing (is agent-chat turned off in /mcp?)` : ''}.`)
+  }
 }
+// The repair from a hook that a turn waits on: at most 3 s, then the turn goes
+// ahead and the tools show up when they're back.
+const ensureToolsSoon = ($: $) => Promise.race([ensureTools($).catch(() => {}), $.clock.sleep(3000)])
 
 const OWNER_ACTIONS = new Set(['create_room', 'add_members'])
 
@@ -695,7 +720,13 @@ export const register: Register = on => {
     // A reload (or plugin update) mid-session: come back to the same rooms.
     if ((await read($, chat)).joined.length) void ensureBridge($).catch(err => $.ui.log(`Agent Chat: ${err.message}`, { to: 'debug' }))
     // Tools first: without `reply` the session can hear a room but never answer it.
-    await ensureTools($)
+    await ensureTools($, true)
+    // Sessions started from the iOS app (2.1.321) have lost the whole tool server
+    // seconds into a turn, with the plugin still loaded and nothing telling it
+    // ("Bubble redesign", 2026-11-16). While in a room, check every minute and put
+    // back what's missing ($.tool.list makes this cheap; nothing is re-registered
+    // when all is there).
+    $.clock.every(60_000, () => { void (async () => { if ((await read($, chat)).joined.length) await ensureTools($) })().catch(() => {}) })
     await $.command.register({ name: NAME, description: 'Join an Agent Chat room from this session, or leave, list rooms, status', argumentHint: 'join <room> | leave | rooms | status | help' })
     return started
   })
@@ -855,6 +886,9 @@ export const register: Register = on => {
     if (e.origin.kind === 'composer' && !e.text.startsWith('/') && (await read($, chat)).joined.length) {
       await update($, chat, v => ({ ...v, prompts: [...v.prompts, e.text.slice(0, 400)].slice(-5), promptsSinceSummary: v.promptsSinceSummary + 1 }))
     }
+    // In a room, any turn may need reply: put back tools the session lost
+    // (the person's own prompt never passes through flushWakes).
+    if ((await read($, chat)).joined.length) await ensureToolsSoon($)
     return next(e)
   })
 
