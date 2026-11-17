@@ -122,6 +122,13 @@ async function remember($: $) {
     await $.store.set('sessions', Object.fromEntries(keep))
   } catch { /* best effort */ }
 }
+// A join lands in state at once, not only when the bridge's next status event
+// does: the rules handed to the model right after a join list the rooms from
+// state (they said "rooms ()" before), and the room is remembered for updates.
+async function noteJoined($: $, room: { id: string; name: string }) {
+  await update($, chat, v => ({ ...v, joined: v.joined.includes(room.id) ? v.joined : [...v.joined, room.id], roomNames: { ...v.roomNames, [room.id]: room.name } }))
+  await remember($)
+}
 async function restore($: $) {
   try {
     const s = await read($, chat)
@@ -255,6 +262,7 @@ async function onEvent($: $, ev: any) {
         await update($, chat, v => ({ ...v, pendingJoin: undefined }))
         try {
           const room = await bridgeCall($, 'POST', '/join', { room: want, waitMs: 30000 })
+          await noteJoined($, room)
           $.ui.log(`Agent Chat: joined #${room.name} as ${(await read($, chat)).label ?? 'this session'}.`)
         } catch (e) { $.ui.log(`Agent Chat: couldn't join ${want}: ${(e as Error).message}`) }
       }
@@ -668,7 +676,7 @@ async function runTool($: $, name: string, args: any): Promise<string> {
       const people = room.members.filter((m: any) => m.kind === 'user').map((m: any) => m.name).join(', ')
       let joined = ''
       if (args.join !== false) {
-        try { await bridgeCall($, 'POST', '/join', { room: room.id, waitMs: 20000 }); joined = ' This session joined it.' }
+        try { await noteJoined($, await bridgeCall($, 'POST', '/join', { room: room.id, waitMs: 20000 })); joined = ' This session joined it.' }
         catch (e) { joined = ` Couldn't join it from this session (${(e as Error).message}); /agent-chat join ${room.name} does.` }
       }
       return `Created #${room.name} (${room.id}). People: ${people}.${joined} It is on chat.facilio.bot.`
@@ -819,6 +827,7 @@ async function command($: $, args: string): Promise<string> {
       await ensureTools($)
       if (toolProblems.length) return `Can't join: this session's Agent Chat tools were refused (${toolProblems[0]}), so it couldn't answer in the room. /agent-chat status`
       const room = await bridgeCall($, 'POST', '/join', { room: arg })
+      await noteJoined($, room)
       void maybeSummarize($, true)
       const s = await read($, chat)
       const others = room.members.filter((m: any) => m.kind === 'agent' && m.sessions?.length).length - 1
