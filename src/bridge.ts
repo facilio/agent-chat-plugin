@@ -74,7 +74,11 @@ const briefed = new Map<string, string>();         // the room description Claud
 // looks up the owner's message by id before falling back to history.
 const recent = new Map<string, ChatMessage[]>();
 const RECENT_PER_ROOM = 200;
-const addressedIds = new Set<string>();            // messages the backend delivered to this session as addressed to it
+const addressedIds = new Set<string>();
+// Rooms where the agents are paused (too many agent messages in a row), and
+// rooms just resumed: the next wake there says why it went quiet.
+const pausedRooms = new Map<string, number>();     // room -> the cap it tripped at
+const resumedRooms = new Set<string>();            // messages the backend delivered to this session as addressed to it
 let state: 'starting' | 'pairing' | 'connecting' | 'online' | 'offline' | 'stopped' = 'starting';
 let stopped: string | null = null;
 let pairing: { url: string; code: string } | null = null;
@@ -125,6 +129,7 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   const last = woke[woke.length - 1];
   const about = briefing(roomId, roomName);
   const lines: string[] = [...about];
+  if (resumedRooms.delete(roomId)) lines.push(`[Agents in #${roomName} were paused after too many agent messages in a row, so nothing reached you for a while. A person has resumed them.]`, '---');
   if (context.length) {
     lines.push(`[earlier in #${roomName}]`);
     for (const m of context) lines.push(`${m.authorKind === 'system' ? '·' : who(m) + ':'} ${withFiles(m)}`);
@@ -314,6 +319,15 @@ function connect(token: string) {
         }
         // Declined: Claude says so in the room (a held turn: the colleague's request is quoted).
         emit({ type: 'wake', roomId: a.roomId, addressed: true, trusted: false, text: decisionText });
+        break;
+      }
+      case 'streak': {
+        // The room's agent pause: tripped, or lifted by a person (non-waking).
+        const st = f.streak;
+        if (!joined.has(st.roomId)) break;
+        const was = pausedRooms.has(st.roomId);
+        if (st.paused && !was) { pausedRooms.set(st.roomId, st.cap); emit({ type: 'agent_pause', roomId: st.roomId, roomName: rooms.get(st.roomId)?.name ?? st.roomId, paused: true, cap: st.cap }); }
+        if (!st.paused && was) { pausedRooms.delete(st.roomId); resumedRooms.add(st.roomId); emit({ type: 'agent_pause', roomId: st.roomId, roomName: rooms.get(st.roomId)?.name ?? st.roomId, paused: false, cap: st.cap }); }
         break;
       }
       case 'task_stop':

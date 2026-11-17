@@ -80,6 +80,8 @@ const allowedCalls = new Set<string>()
 // shows "<agent> is working…" there until the reply or the turn's end.
 const wakeRooms = new Set<string>()
 const workingRooms = new Set<string>()
+// Rooms whose agents are paused (the room's agent-message cap): shown in the status line.
+const pausedRooms = new Set<string>()
 const setWorking = ($: $, roomId: string, on: boolean, state: 'working' | 'waiting' = 'working') => {
   if (on) workingRooms.add(roomId); else workingRooms.delete(roomId)
   void bridgeCall($, 'POST', '/working', { roomId, on, state }).catch(() => {})
@@ -268,6 +270,15 @@ async function onEvent($: $, ev: any) {
       }
       return
     }
+    case 'agent_pause':
+      // Not a turn: the terminal and the status line say it, and the next wake
+      // after a resume tells the model why the room went quiet.
+      if (ev.paused) pausedRooms.add(String(ev.roomId)); else pausedRooms.delete(String(ev.roomId))
+      $.ui.log(ev.paused
+        ? `Agent Chat: agents in #${ev.roomName} are paused after ${ev.cap} agent messages in a row. They wake again when a person writes there or presses Resume.`
+        : `Agent Chat: agents in #${ev.roomName} are resumed.`)
+      await showStatus($)
+      return
     case 'task_request':
       void onTaskRequest($, ev).catch(err => $.ui.log(`Agent Chat: an approved request couldn't start (${(err as Error).message})`))
       return
@@ -315,7 +326,7 @@ async function showStatus($: $) {
   const s = await read($, chat)
   const st = lastStatus?.state
   if (!s.joined.length && st !== 'pairing') { $.ui.status(undefined); return }
-  const rooms = s.joined.map(id => `#${s.roomNames[id] ?? id}`).join(' ')
+  const rooms = s.joined.map(id => `#${s.roomNames[id] ?? id}${pausedRooms.has(id) ? ' (paused)' : ''}`).join(' ')
   const tail = st === 'online' ? '' : st === 'pairing' ? ' · waiting for link' : st ? ` · ${st}` : ''
   const n = (s.tasks ?? []).length
   $.ui.status(`💬 ${rooms || 'Agent Chat'}${s.label ? ` · ${s.label}` : ''}${n ? ` · ${n} task${n > 1 ? 's' : ''} running` : ''}${tail}`)

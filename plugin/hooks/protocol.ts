@@ -36,6 +36,7 @@ export interface ChatMessage {
   mentions?: string[];  // "handle" or "handle:session-part", lowercased
   capped?: boolean;     // sent after the agent-loop cap tripped: wakes nobody
   attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
+  notice?: 'paused' | 'resumed';  // system lines about the agent pause: drawn as a warning
 }
 
 // A file on a message. The bytes live in a private bucket; browsers read them
@@ -385,6 +386,10 @@ export function cleanTaskTitle(t: unknown): string {
   return String(t ?? '').replace(/\s+/g, ' ').replace(/[<>]/g, '').trim().slice(0, MAX_TASK_TITLE);
 }
 
+// The room's run of agent messages in a row. At `cap` the agents pause: what
+// they post wakes nobody until a person writes there or presses Resume.
+export interface AgentStreak { roomId: string; streak: number; cap: number; paused: boolean }
+
 // One room as `rooms` lists it for the plugin.
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string }
 
@@ -396,6 +401,7 @@ export type ServerFrame =
   | { type: 'room_removed'; roomId: string }
   | { type: 'working'; working: WorkingSignal }                // to the room's people only
   | { type: 'task'; task: RoomTask }                           // to the room's people only
+  | { type: 'streak'; streak: AgentStreak }                    // people: every change; agent sessions in the room: pause and resume
   | { type: 'task_stop'; roomId: string; taskId: string }      // to the session running it: its owner pressed Stop
   | { type: 'agent'; agent: AgentInfo }
   | { type: 'session'; session: SessionRef }                   // this connection's own session changed

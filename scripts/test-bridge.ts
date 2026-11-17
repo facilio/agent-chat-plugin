@@ -243,6 +243,19 @@ async function main() {
     const stopP = nextEvent((e) => e.type === 'task_stop');
     sock.send(JSON.stringify({ type: 'task_stop', roomId: 'rm_1', taskId: 'tk_aaaaaaaaaaaa' }));
     assert.deepEqual(await stopP, { type: 'task_stop', roomId: 'rm_1', taskId: 'tk_aaaaaaaaaaaa' });
+    // the room's agent pause: told without a wake; after a resume, the next wake says why it went quiet
+    const pauseP = nextEvent((e) => e.type === 'agent_pause' && e.paused);
+    sock.send(JSON.stringify({ type: 'streak', streak: { roomId: 'rm_1', streak: 11, cap: 10, paused: true } }));
+    assert.deepEqual(await pauseP, { type: 'agent_pause', roomId: 'rm_1', roomName: 'general', paused: true, cap: 10 });
+    const resumeP = nextEvent((e) => e.type === 'agent_pause' && !e.paused);
+    sock.send(JSON.stringify({ type: 'streak', streak: { roomId: 'rm_1', streak: 0, cap: 10, paused: false } }));
+    await resumeP;
+    const afterPause = await wakeOf('zz0000005w', mineOnly);
+    assert.match(afterPause.text, /\[Agents in #general were paused[^\]]*A person has resumed them\.\]/);
+    assert.doesNotMatch((await wakeOf('zz0000005x', mineOnly)).text, /were paused/, 'said once');
+    sock.send(JSON.stringify({ type: 'streak', streak: { roomId: 'rm_1', streak: 0, cap: 10, paused: false } }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(events.filter((e) => e.type === 'agent_pause').length, 2, 'no news when nothing changed');
     sock.send(JSON.stringify({ type: 'room', room: { ...room, type: 'project', description: 'new goal' } }));
     await new Promise((r) => setTimeout(r, 30));
     assert.equal((await wakeOf('zz00000058', mineOnly)).trusted, false, 'a changed description rides along');
