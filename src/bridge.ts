@@ -21,7 +21,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writ
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { inert } from '../plugin/hooks/inert';
-import { FILE_ID_RE, MAX_FILE_BYTES, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
+import { FILE_ID_RE, MAX_FILE_BYTES, isAddressed, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
 const VERSION = '0.6.1';
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
@@ -498,7 +498,16 @@ const routes: Record<string, Handler> = {
       m = got.find((x) => x.id === id);
     }
     if (!m) throw Object.assign(new Error('No such message in that room'), { code: 'no_message' });
-    return { message: m, isOwner: m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail, addressed: addressedIds.has(m.id) };
+    // Delivered to this session as addressed, or (after a restart, from
+    // history) addressed by the backend's own rule: its mentions, set by the
+    // server, against the room's members.
+    const room = rooms.get(roomId);
+    const addressed = addressedIds.has(m.id) || (!!room && !!me && isAddressed(m, me.name, {
+      agentNames: room.members.filter((x) => x.kind === 'agent').map((x) => x.name),
+      userHandles: room.members.filter((x) => x.kind === 'user').map((x) => userHandle(x.id)),
+      session: session?.label,
+    }));
+    return { message: m, isOwner: m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail, addressed };
   },
   // A task this session runs in a subagent: running / done / stopped / failed.
   'POST /task': async (b) => call({ action: 'task', roomId: String(b.roomId), taskId: String(b.taskId), title: String(b.title ?? ''), state: String(b.state) }),

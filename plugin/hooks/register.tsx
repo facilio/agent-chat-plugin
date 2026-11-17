@@ -293,6 +293,13 @@ const saveTask = ($: $, t: TaskRec) => update($, chat, v => ({ ...v, tasks: [...
 const ownerName = () => lastStatus?.me?.ownerName ?? 'your owner'
 const ownerFirst = () => ownerName().split(' ')[0]
 
+// The Agent call this plugin's own $.agent.spawn makes for a task it is starting.
+function isOwnTaskSpawn(tool: string, input: any): boolean {
+  if (tool !== 'Agent' || input?.subagent_type !== `${NAME}:${TASK_AGENT}`) return false
+  const id = /^Agent Chat task (tk_[a-z0-9]{12}) /.exec(String(input?.prompt ?? ''))?.[1]
+  return !!id && spawning.has(id)
+}
+
 // The task a tool call belongs to, by the loop that made it.
 async function taskForAgent($: $, agentId: string | undefined): Promise<TaskRec | undefined> {
   if (!agentId) return undefined
@@ -912,8 +919,9 @@ export const register: Register = on => {
     // would run. Only the tool's own run (next) is outside the catch.
     let why = 'a room message started this turn'
     try {
-      // This plugin stopping one of its tasks.
+      // This plugin stopping one of its tasks, or starting one.
       if (e.tool === 'TaskStop' && !e.agentId && stopCalls.has(String((e as any).task_id ?? ''))) return next(e)
+      if (isOwnTaskSpawn(e.tool, toolArgs(e as any))) return next(e)
       const own = e.tool.startsWith(`mcp__${NAME}__`) ? e.tool.slice(`mcp__${NAME}__`.length) : ''
       // A task's subagents: the owner approved this work, so the hold steps
       // aside and the session's normal permissions decide. Acting as the owner
@@ -1001,7 +1009,12 @@ export const register: Register = on => {
     if (verdict.decision !== 'ask' || verdict.plugin || e.approver !== 'person' || !e.tool_use_id) return verdict
     const s = await read($, chat)
     if (!bridge || !s.joined.length || lastStatus?.state !== 'online') return verdict
-    if ((!roomTurn && !(await taskForAgent($, e.agentId))) || (await $.store.get('paneOff')) === true) return verdict
+    if (!roomTurn || (await $.store.get('paneOff')) === true) return verdict
+    // A task's own calls and this plugin's spawn of one take the session's
+    // normal path for an ask: in auto mode the classifier answers it, which
+    // a card here would pre-empt.
+    if (e.agentId && (await taskForAgent($, e.agentId))) return verdict
+    if (isOwnTaskSpawn(e.tool, e.input)) return verdict
     return holdForOwner($, e, next, {
       description: verdict.reason ? `${describe(e.tool, e.input)} — ${verdict.reason}` : describe(e.tool, e.input),
       preview: JSON.stringify(e.input ?? {}, null, 1),

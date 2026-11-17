@@ -13,7 +13,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 const owner = 'owner@example.com';
 const SECRET = 'test-secret-0123456789';
-const room = { id: 'rm_1', name: 'general', createdBy: owner, createdAt: 0, members: [] };
+const room = { id: 'rm_1', name: 'general', createdBy: owner, createdAt: 0, members: [{ kind: 'user', id: owner, name: 'Owner Person' }, { kind: 'user', id: 'colleague@example.com', name: 'Colleague' }, { kind: 'agent', id: 'ag_a', name: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person' }] };
 const agent = { id: 'ag_a', name: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person', createdAt: 0 };
 
 async function main() {
@@ -212,7 +212,7 @@ async function main() {
     assert.deepEqual([own57.isOwner, own57.addressed], [true, true]);
     assert.equal((await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000056' })).data.isOwner, false);
     // the owner talking to someone else: theirs, but not addressed to this session
-    sock.send(JSON.stringify({ type: 'message', message: msg('zz0000005y', 'try now @other', mineOnly), wake: false, addressed: false }));
+    sock.send(JSON.stringify({ type: 'message', message: { ...msg('zz0000005y', 'try now @colleague', mineOnly), mentions: ['colleague'] }, wake: false, addressed: false }));
     await new Promise((r) => setTimeout(r, 30));
     const aside = (await cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz0000005y' })).data;
     assert.deepEqual([aside.isOwner, aside.addressed], [true, false], "start_task can't use an aside");
@@ -221,7 +221,14 @@ async function main() {
     const hf = await histF;
     assert.deepEqual([hf.action, hf.roomId, hf.before, hf.limit], ['history', 'rm_1', 'zz00000001~', 1], 'falls back to the room history');
     reply(hf, [msg('zz00000001', 'old ask', mineOnly)]);
-    assert.deepEqual([(await missing).data.isOwner, (await missing).data.addressed], [true, false], 'from history, never counted as addressed');
+    assert.equal((await missing).data.isOwner, true);
+    // from history (after a bridge restart), addressed is the backend's own rule
+    const askHist = async (id: string, text: string, mentions: string[]) => {
+      const f = nextFrame(); const p = cmd('POST', '/message', { roomId: 'rm_1', messageId: id });
+      reply(await f, [{ ...msg(id, text, mineOnly), mentions }]); return (await p).data;
+    };
+    assert.equal((await askHist('zz00000003', 'go', [])).addressed, true, 'a person mentioning nobody addresses the room\'s agents');
+    assert.equal((await askHist('zz00000004', '@colleague go', ['colleague'])).addressed, false, 'a message to a person');
     const goneF = nextFrame();
     const gone = cmd('POST', '/message', { roomId: 'rm_1', messageId: 'zz00000002' });
     reply(await goneF, []);
