@@ -23,7 +23,7 @@ import type { Approval, ChatState, Person, TaskRec } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
-import { OWNER_ACTS, coveredBy, grantLabel, holdsOnTaintedTurn, toolArgs, turnPeople, withGrant } from './hold.ts'
+import { OWNER_ACTS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
 type $ = EngineInterface
@@ -968,7 +968,7 @@ async function command($: $, args: string): Promise<string> {
       }
       const s = await read($, chat)
       return s.grantedPeople?.length
-        ? `Allowed for this session: ${s.grantedPeople.map(p => p.name).join(', ')} (turns only they or their agents start don't ask). Everyone else still asks. /agent-chat hold on to ask again.`
+        ? `Allowed for this session: ${s.grantedPeople.map(personLabel).join(', ')} (turns only they or their agents start don't ask). Everyone else still asks. /agent-chat hold on to ask again.`
         : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for this session" on a card stops asking for turns that person starts.'
     }
     case 'pane': {

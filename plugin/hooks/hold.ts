@@ -51,10 +51,14 @@ export function turnPeople(batch: Array<{ trusted: boolean; from: Person[] | nul
   return people.length ? people : null
 }
 // How the card names them: everyone the grant would cover, with their handle
-// (two people can share a name). More than two: no grant offered ('').
+// (two people can share a name). More than two, or too long for the card to
+// show whole (the backend keeps GRANT_LABEL_MAX): no grant offered (''), so a
+// card never names fewer people than it would allow.
+export const GRANT_LABEL_MAX = 120
+export const personLabel = (p: Person) => `${p.name} (@${userHandle(p.email)})`
 export function grantLabel(people: Person[]): string {
-  const one = (p: Person) => `${p.name} (@${userHandle(p.email)})`
-  return people.length === 1 ? one(people[0]) : people.length === 2 ? `${one(people[0])} and ${one(people[1])}` : ''
+  const label = people.length === 1 ? personLabel(people[0]) : people.length === 2 ? `${personLabel(people[0])} and ${personLabel(people[1])}` : ''
+  return label.length <= GRANT_LABEL_MAX ? label : ''
 }
 // Whether everyone behind a turn has been allowed for this session.
 export function coveredBy(granted: Person[] | undefined, people: Person[] | null | undefined): boolean {

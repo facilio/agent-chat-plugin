@@ -2,7 +2,7 @@
 // how the card names them, and that the grant covers exactly those people.
 //   claude plugin test plugin
 import { expect, test } from 'claude-code/testing'
-import { coveredBy, grantLabel, turnPeople, withGrant } from '../hooks/hold.ts'
+import { GRANT_LABEL_MAX, coveredBy, grantLabel, personLabel, turnPeople, withGrant } from '../hooks/hold.ts'
 
 const carol = { email: 'carol@facilio.com', name: 'Carol Das' }
 const bob = { email: 'bob@facilio.com', name: 'Bob Kumar' }
@@ -19,6 +19,11 @@ test('the card names everyone the grant covers, with handles; more than two: no 
   expect(grantLabel([carol])).toBe('Carol Das (@carol)')
   expect(grantLabel([carol, bob])).toBe('Carol Das (@carol) and Bob Kumar (@bob)')
   expect(grantLabel([carol, bob, mallory])).toBe('')
+  // too long for the card to show whole: no grant, never a card naming fewer people than it allows
+  const long = { email: 'a.very.long.address.for.someone@facilio.com', name: 'Someone With A Really Very Long Display Name Indeed' }
+  expect(grantLabel([long, { ...long, email: 'b.' + long.email }])).toBe('')
+  expect(grantLabel([long]).length).toBeLessThanOrEqual(GRANT_LABEL_MAX)
+  expect(personLabel(bob)).toBe('Bob Kumar (@bob)')
 })
 
 test('a turn skips the hold only if everyone behind it is allowed', async () => {
