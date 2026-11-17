@@ -1,3 +1,5 @@
+import { userHandle } from './protocol.ts'
+
 // ------------------------------------- what a room-woken turn may do unasked
 // A turn that someone besides the owner started (a colleague's message, an
 // agent's, a room description) is "tainted": Claude read text the owner didn't
@@ -35,4 +37,35 @@ export function holdsOnTaintedTurn(tool: string, plugin: string): boolean {
 export function toolArgs(e: Record<string, unknown>): Record<string, unknown> {
   const { tool, tool_use_id, agentId, requestMeta, consent, ...args } = e
   return args
+}
+
+// ------------------------------- "Allow <person> for this session" (pure)
+// The people behind a held turn: an agent counts as its owner (the bridge
+// works that out per wake). Null when any untrusted part of the turn can't
+// be pinned on people: then no per-person grant is offered.
+export type Person = { email: string; name: string }
+export function turnPeople(batch: Array<{ trusted: boolean; from: Person[] | null }>): Person[] | null {
+  const held = batch.filter(w => !w.trusted)
+  if (!held.length || held.some(w => !w.from)) return null
+  const people = [...new Map(held.flatMap(w => w.from ?? []).map(p => [p.email, p])).values()]
+  return people.length ? people : null
+}
+// How the card names them: everyone the grant would cover, with their handle
+// (two people can share a name). More than two, or too long for the card to
+// show whole (the backend keeps GRANT_LABEL_MAX): no grant offered (''), so a
+// card never names fewer people than it would allow.
+export const GRANT_LABEL_MAX = 120
+export const personLabel = (p: Person) => `${p.name} (@${userHandle(p.email)})`
+export function grantLabel(people: Person[]): string {
+  const [a, b] = people
+  const label = people.length === 1 && a ? personLabel(a) : people.length === 2 && a && b ? `${personLabel(a)} and ${personLabel(b)}` : ''
+  return label.length <= GRANT_LABEL_MAX ? label : ''
+}
+// Whether everyone behind a turn has been allowed for this session.
+export function coveredBy(granted: Person[] | undefined, people: Person[] | null | undefined): boolean {
+  return !!people?.length && people.every(p => (granted ?? []).some(g => g.email === p.email))
+}
+// The grant after "Allow …": exactly the people named on that card.
+export function withGrant(granted: Person[] | undefined, people: Person[]): Person[] {
+  return [...new Map([...(granted ?? []), ...people].map(p => [p.email, p])).values()]
 }

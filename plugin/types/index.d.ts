@@ -18,7 +18,15 @@ export type ChatState = {
   tasks?: TaskRec[];                    // tasks running in subagents (tasks.ts)
   usedSources?: string[];               // owner messages / asks that already started a task (each starts one)
   endedAgents?: string[];               // task subagents that ended: anything more from them is refused
+  // Who started the current held turn (the people behind its messages; an
+  // agent counts as its owner). Null when that can't be pinned on people,
+  // e.g. a room description, which any member edits.
+  turnFrom?: Person[] | null;
+  // "Allow <person> for this session": turns only they (or their agents)
+  // started skip the hold for the rest of the session. Everyone else still asks.
+  grantedPeople?: Person[];
 };
+export type Person = { email: string; name: string };
 
 // A task: approved work running in an agent-chat:task subagent (tasks.ts).
 export type TaskRec = {
@@ -37,7 +45,7 @@ export type TaskRec = {
 };
 
 // A tool call held for the owner's answer (terminal pane + web card).
-export type Approval = { requestId: string; tool: string; description: string; preview: string };
+export type Approval = { requestId: string; tool: string; description: string; preview: string; grantTo?: string };
 
 declare module 'claude-code' {
   interface PluginState {

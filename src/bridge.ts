@@ -23,7 +23,9 @@ import { dirname, join } from 'node:path';
 import { inert } from '../plugin/hooks/inert';
 import { FILE_ID_RE, MAX_FILE_BYTES, isAddressed, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
-const VERSION = '0.6.1';
+// The plugin's version (plugin.json): the backend can require a minimum
+// (MIN_PLUGIN_VERSION) to move every session onto a release.
+const VERSION = '0.11.0';
 // AGENT_CHAT_STATE_DIR keeps a dev backend's token apart from the real one.
 const STATE_DIR = process.env.AGENT_CHAT_STATE_DIR || join(homedir(), '.claude', 'channels', 'agent-chat');
 const WEB_URL = process.env.AGENT_CHAT_WEB_URL ?? 'https://chat.facilio.bot';
@@ -148,7 +150,23 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   // task of this room as the owner's steering (never anyone else's).
   const fromOwner = woke.every((m) => m.authorKind === 'user' && ownerOnly(m))
     ? { messageIds: woke.map((m) => m.id), text: woke.map((m) => withFiles(m)).join('\n') } : undefined;
-  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  // Who's behind it (an agent counts as its owner), for a per-person grant.
+  // Null when it can't be pinned on people: a room description (any member
+  // edits it) or an author with no owner on record.
+  const people = new Map<string, string>();
+  let pinned = !about.length;
+  for (const m of [...context, ...woke]) {
+    if (ownerOnly(m)) continue;
+    // the owner's own agents (other sessions) relay whatever they read: never
+    // pinned on the owner, so no "Allow <yourself>" on the owner's own card
+    if (m.authorKind === 'agent' && !!me && m.ownerEmail === me.ownerEmail) { pinned = false; continue; }
+    const email = m.authorKind === 'agent' ? m.ownerEmail : m.authorId;
+    const name = m.authorKind === 'agent' ? m.ownerName : m.authorName;
+    if (!email || !name) { pinned = false; continue; }
+    people.set(email, name);
+  }
+  const from = pinned && people.size ? [...people].map(([email, name]) => ({ email, name })) : null;
+  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, from, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -194,6 +212,8 @@ const PENDING_TTL_MS = 10 * 60_000;
 const pendingPerms = new Map<string, { frame: Record<string, unknown>; at: number }>();
 const settle = (id: string) => { pendingPerms.delete(id); };
 const verdicts = new Map<string, string>();
+// 'person' when the owner chose Allow <person> for this session (web card or pane).
+const scopes = new Map<string, string>();
 
 function request(frame: Record<string, unknown>, timeoutMs = 15000): Promise<ServerFrame> {
   return new Promise((resolve, reject) => {
@@ -340,6 +360,7 @@ function connect(token: string) {
         // only sends a verdict after checking the clicker owns this agent.
         if (f.behavior === 'allow' || f.behavior === 'deny') {
           settle(f.requestId);
+          if (f.behavior === 'allow' && f.scope === 'person') scopes.set(f.requestId, 'person');
           verdicts.set(f.requestId, f.behavior);
           for (const w of verdictWaiters.get(f.requestId) ?? []) w(f.behavior);
           verdictWaiters.delete(f.requestId);
@@ -576,21 +597,21 @@ const routes: Record<string, Handler> = {
   'POST /propose_avatar': async (b) => call({ action: 'propose_avatar', svg: String(b.svg ?? ''), note: b.note === undefined ? undefined : String(b.note) }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {
-    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash };
+    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash, ...(b.grantTo ? { grantTo: String(b.grantTo).slice(0, 120) } : {}) };
     pendingPerms.set(String(b.requestId), { frame, at: Date.now() });
     await call(frame);
     return { ok: true };
   },
   'POST /permission/wait': async (b) => {
     const id = String(b.requestId);
-    if (verdicts.has(id)) return { behavior: verdicts.get(id) };
+    if (verdicts.has(id)) return { behavior: verdicts.get(id), scope: scopes.get(id) };
     const behavior = await new Promise<string | null>((resolve) => {
       const t = setTimeout(() => resolve(null), Math.min(Number(b.waitMs ?? 25000), 55000));
       const list = verdictWaiters.get(id) ?? [];
       list.push((v) => { clearTimeout(t); resolve(v); });
       verdictWaiters.set(id, list);
     });
-    return { behavior };
+    return { behavior, scope: scopes.get(id) };
   },
   // Answered in the terminal (the module's pane): tell the backend so the
   // owner's web card clears, and wake the hook's long-poll. 'terminal' = hand
@@ -598,6 +619,7 @@ const routes: Record<string, Handler> = {
   'POST /permission/answer': async (b) => {
     const id = String(b.requestId);
     const behavior = String(b.behavior);
+    if (behavior === 'allow' && b.scope === 'person') scopes.set(id, 'person');
     settle(id);
     if (behavior === 'terminal') await call({ action: 'permission_cancel', requestId: id }).catch(() => {});
     else await call({ action: 'permission_answer', requestId: id, behavior, nonce: b.nonce }).catch(() => {});

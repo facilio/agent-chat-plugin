@@ -96,7 +96,7 @@ async function main() {
   wss.on('connection', (s, req) => {
     connects++;
     assert.equal(req.headers.authorization, 'Bearer ac_paired');
-    assert.match(String(req.headers['user-agent']), /^agent-chat-plugin\/0\.6\./);
+    assert.match(String(req.headers['user-agent']), /^agent-chat-plugin\/0\.11\./);
     sock = s;
     s.on('message', (raw) => {
       const f = JSON.parse(String(raw));
@@ -154,7 +154,7 @@ async function main() {
 
     // 2. hello carries the session
     const hello = await helloP;
-    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.6.1', ['sessions']]);
+    assert.deepEqual([hello.action, hello.version, hello.features], ['hello', '0.11.0', ['sessions']]);
     assert.deepEqual(hello.session, { id: 'ss_test_session_1', label: 'agent-chat:main:mbp', rooms: [] });
     sock.send(JSON.stringify({ type: 'hello', reqId: hello.reqId, agent, session: { id: 'ss_test_session_1', label: 'agent-chat:main:mbp' }, rooms: [], missed: [] }));
     await nextEvent((e) => e.type === 'status' && e.state === 'online');
@@ -191,6 +191,7 @@ async function main() {
     assert.match(wake2.text, /from="@bob-ai \(Bob's agent, session api:main:agent-b\)" from_kind="agent" from_is_owner="false" addressed="true"/);
     assert.doesNotMatch(wake2.text, /mine/);
     assert.equal(wake2.trusted, false, "another agent's message makes a held turn");
+    assert.equal(wake2.from, null, "an agent with no owner on record can't be pinned on a person: no per-person grant");
     // the room's description reaches Claude once, again only when it changes; the type is on every tag
     sock.send(JSON.stringify({ type: 'room', room: { ...room, type: 'project', description: 'Lunch plans\nand memes' } }));
     await new Promise((r) => setTimeout(r, 30));
@@ -217,8 +218,14 @@ async function main() {
     const theirs = await wakeOf('zz00000056', {});
     assert.equal(theirs.trusted, false, "a colleague's message");
     assert.equal(theirs.fromOwner, undefined, "only the owner's words can steer a task");
+    assert.deepEqual(theirs.from, [{ email: 'colleague@example.com', name: 'Colleague' }], "who's behind a colleague's message");
+    const agentsWake = await wakeOf('zz0000005a', { authorKind: 'agent', authorId: 'ag_b', authorName: 'bob-ai', ownerEmail: 'bob@example.com', ownerName: 'Bob', session: 'api:main:agent-b' });
+    assert.deepEqual(agentsWake.from, [{ email: 'bob@example.com', name: 'Bob' }], 'an agent counts as its owner');
+    const ownAgentWake = await wakeOf('zz0000005b', { authorKind: 'agent', authorId: 'ag_a', authorName: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person', session: 'api:main:other' });
+    assert.equal(ownAgentWake.from, null, "the owner's own agents (other sessions) are never pinned on the owner");
     const ownWake = await wakeOf('zz00000057', mineOnly);
     assert.equal(ownWake.trusted, true, "the owner's own message");
+    assert.equal(ownWake.from, null, 'nobody else behind it');
     assert.deepEqual(ownWake.fromOwner, { messageIds: ['zz00000057'], text: 'go' });
     assert.equal(ownWake.roomName, 'general');
     // start_task looks a message up by id; the backend's author decides who wrote it
@@ -325,6 +332,25 @@ async function main() {
     sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'abcde', behavior: 'deny' }));
     assert.equal((await waiting).data.behavior, 'deny');
     assert.equal((await cmd('POST', '/permission/wait', { requestId: 'zzzzz', waitMs: 50 })).data.behavior, null, 'times out empty');
+    // "Allow <person> for this session": the card is told who, and the scope comes back with the verdict
+    const sesF = nextFrame();
+    const ses = cmd('POST', '/permission', { requestId: 'sessn', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'c'.repeat(64), grantTo: 'Manthosh Kumar' });
+    const sesFrame = await sesF;
+    assert.equal(sesFrame.grantTo, 'Manthosh Kumar', 'the request names who the grant would cover');
+    reply(sesFrame, { requestId: 'sessn' });
+    await ses;
+    const sesWait = cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 5000 });
+    await new Promise((r) => setTimeout(r, 50));
+    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'sessn', behavior: 'allow', scope: 'person' }));
+    assert.deepEqual([(await sesWait).data.behavior, (await sesWait).data.scope], ['allow', 'person'], 'the person scope reaches the hook');
+    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'sessn', waitMs: 50 })).data.scope, 'person', 'and is kept for a late long-poll');
+    const onceF = nextFrame();
+    const once = cmd('POST', '/permission', { requestId: 'oncex', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'd'.repeat(64) });
+    reply(await onceF, { requestId: 'oncex' });
+    await once;
+    sock.send(JSON.stringify({ type: 'permission_verdict', requestId: 'oncex', behavior: 'allow' }));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await cmd('POST', '/permission/wait', { requestId: 'oncex', waitMs: 50 })).data.scope, undefined, 'a plain Allow is once');
     // a second request is still waiting when the connection drops (step 8)
     const pend2F = nextFrame();
     const pend2 = cmd('POST', '/permission', { requestId: 'fghij', toolName: 'Bash', description: 'ls', inputPreview: '{}', nonceHash: 'b'.repeat(64) });

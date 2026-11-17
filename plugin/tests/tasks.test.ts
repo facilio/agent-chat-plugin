@@ -132,3 +132,33 @@ test("inside a task: work runs, the owner's private data waits", async ($, on) =
     expect(ran(r)).toBe(false)
   }
 })
+
+test('"Allow <person> for this session": turns only they start skip the hold; anyone else still asks', async ($, on) => {
+  const st = engine(on)
+  const manthosh = { email: 'manthosh@facilio.com', name: 'Manthosh Kumar' }, shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
+  // someone else in the turn (or only someone else): held
+  st.seed(chatWith({ turnFrom: [manthosh, shiv], grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // a turn that can't be pinned on people (a room description): held
+  st.seed(chatWith({ turnFrom: null, grantedPeople: [manthosh] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // /agent-chat hold on: nobody granted, held again
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+})
+
+test("a per-person grant lifts the tool hold, never the owner's private data", async ($, on) => {
+  const st = engine(on)
+  const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [shiv] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
+  expect(ran(await $.tool.call({ tool: 'Read', file_path: '/Users/me/other/notes.md' } as any))).toBe(true)
+  for (const input of [{ tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/MEMORY.md' }, { tool: 'Bash', command: 'cat ~/.claude/CLAUDE.md' }, { tool: 'Read', file_path: '.env' }]) {
+    const r: any = await $.tool.call(input as any)
+    expect(ran(r)).toBe(false)
+  }
+})

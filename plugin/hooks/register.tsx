@@ -19,11 +19,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Approval, ChatState, TaskRec } from '../types'
+import type { Approval, ChatState, Person, TaskRec } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
-import { OWNER_ACTS, READ_TOOLS, holdsOnTaintedTurn, toolArgs } from './hold.ts'
+import { OWNER_ACTS, READ_TOOLS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
@@ -63,7 +63,7 @@ const nonces = new Map<string, string>()
 let bridge: { socketPath: string; secret: string; stop: () => void } | null = null
 let starting: Promise<void> | null = null
 let busy = false
-const wakes: Array<{ text: string; trusted: boolean }> = []
+const wakes: Array<{ text: string; trusted: boolean; from: Person[] | null }> = []
 // Whether the current main turn was started by room messages (our own
 // $.prompt.submit) rather than by the person at the terminal or on Remote
 // Control. Only then do approvals go to the web: the person who typed the
@@ -293,7 +293,7 @@ async function onEvent($: $, ev: any) {
       // task: their words go to it verbatim ("stop" ends it), and the main
       // session isn't woken. Not when they're talking to someone else.
       if (ev.fromOwner && ev.addressed === true && ev.roomId && (await steerTask($, ev))) return
-      wakes.push({ text: ev.text, trusted: ev.trusted === true })
+      wakes.push({ text: ev.text, trusted: ev.trusted === true, from: Array.isArray(ev.from) ? ev.from : null })
       if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
       return
@@ -317,6 +317,10 @@ async function flushWakes($: $) {
   busy = true
   roomTurn = true
   await setTainted($, batch.some(w => !w.trusted))
+  // the people behind this turn (for "Allow <person> for this session"); null
+  // if any untrusted part of it can't be pinned on people
+  const from = turnPeople(batch)
+  await update($, chat, v => ({ ...v, turnFrom: from }))
   for (const r of wakeRooms) setWorking($, r, true)
   wakeRooms.clear()
   await ensureToolsSoon($)
@@ -502,7 +506,7 @@ async function onTaskRequest($: $, ev: any) {
   // task type here): the main session does it as before 0.10, a held turn
   // where each action gets the owner's card.
   $.ui.log(`Agent Chat: you approved a request in #${ev.roomName}; it runs here with a card per action, because it couldn't start as a task (${r.error}).`)
-  if (ev.fallbackWake) { wakes.push({ text: String(ev.fallbackWake), trusted: false }); void flushWakes($) }
+  if (ev.fallbackWake) { wakes.push({ text: String(ev.fallbackWake), trusted: false, from: null }); void flushWakes($) }
 }
 
 // After a reload or a restart: tasks whose subagent is gone are closed.
@@ -772,15 +776,17 @@ type Verdict = { decision: 'allow' | 'deny' | 'ask'; reason?: string; [k: string
 // against the hook's time budget. webOnlyOk: keep waiting on the web card when
 // no pane can be placed (Remote Control, headless); otherwise fall back to the
 // normal prompt.
-async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict }): Promise<any> {
+// Who a held turn's "Allow … for this session" would cover, as the card says it.
+const startedByGranted = (s: ChatState) => coveredBy(s.grantedPeople, s.turnFrom)
+async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict; grantTo?: string }): Promise<any> {
   const ids = 'abcdefghijkmnopqrstuvwxyz'
   const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
   const nonce = rand(16)
   try {
-    await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description: o.description, inputPreview: o.preview.slice(0, 4000), nonceHash: await sha256(nonce) })
+    await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description: o.description, inputPreview: o.preview.slice(0, 4000), nonceHash: await sha256(nonce), ...(o.grantTo ? { grantTo: o.grantTo } : {}) })
   } catch { return o.onTerminal }
   nonces.set(requestId, nonce)
-  await update($, approval, () => ({ requestId, tool: e.tool, description: o.description, preview: o.preview.slice(0, 600) }))
+  await update($, approval, () => ({ requestId, tool: e.tool, description: o.description, preview: o.preview.slice(0, 600), grantTo: o.grantTo }))
   const placed = (await $.store.get('paneOff')) === true
     ? { isPlaced: false }
     : await $.ui.open({ id: PANE, title: 'Agent Chat · approval needed', focus: true, rows: 9 }).catch(() => ({ isPlaced: false }))
@@ -801,8 +807,8 @@ async function holdForOwner($: $, e: any, next: any, o: { description: string; p
   const until = Date.now() + PERMISSION_WAIT_MS
   try {
     while (Date.now() < until && !next.signal?.aborted) {
-      const r = await bridgeCall<{ behavior: string | null }>($, 'POST', '/permission/wait', { requestId, waitMs: 25000 }).catch(() => ({ behavior: null }))
-      if (r.behavior === 'allow') return { decision: 'allow' as const, reason: 'Allowed by the owner (Agent Chat)' }
+      const r = await bridgeCall<{ behavior: string | null; scope?: string }>($, 'POST', '/permission/wait', { requestId, waitMs: 25000 }).catch(() => ({ behavior: null }))
+      if (r.behavior === 'allow') return { decision: 'allow' as const, reason: 'Allowed by the owner (Agent Chat)', person: r.scope === 'person' && !!o.grantTo }
       if (r.behavior === 'deny') return o.onDeny
       if (r.behavior === 'terminal') return o.onTerminal
     }
@@ -823,6 +829,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat summary <on|off|text>  the one-line "working on" shown next to the label
   /agent-chat connect            link this computer again (new link)
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
+  /agent-chat hold [on]          who you allowed for this session; on = ask again for everyone
   /agent-chat review <on|off> [room|all]  every reply there waits for your OK (looks-private replies always do)
   /agent-chat tasks              tasks running in subagents (work you gave or approved in a room)
   /agent-chat stop <task|all>    stop a task
@@ -984,6 +991,17 @@ async function command($: $, args: string): Promise<string> {
       for (const t of hit) await stopTask($, t, 'stopped from the terminal')
       return `Stopping ${hit.map(t => t.id).join(', ')}. The room sees it stop.`
     }
+    case 'hold': {
+      // Undo "Allow for this session": ask again for each held action here.
+      if (arg === 'on') {
+        await update($, chat, v => ({ ...v, grantedPeople: [] }))
+        return 'Asking again: actions in turns anyone else started wait for your OK, until you allow someone for this session on a card.'
+      }
+      const s = await read($, chat)
+      return s.grantedPeople?.length
+        ? `Allowed for this session: ${s.grantedPeople.map(personLabel).join(', ')} (turns only they or their agents start don't ask). Everyone else still asks. /agent-chat hold on to ask again.`
+        : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for this session" on a card stops asking for turns that person starts.'
+    }
     case 'pane': {
       if (arg === 'off') {
         await $.store.set('paneOff', true)
@@ -1046,6 +1064,9 @@ export const register: Register = on => {
     // Deciding fails closed: a gate hook that throws is skipped, and the call
     // would run. Only the tool's own run (next) is outside the catch.
     let why = 'a room message started this turn'
+    // Held for the owner's private data under a grant: a card here offers no
+    // grant, since a grant wouldn't lift it.
+    let privateHold = false
     try {
       // This plugin stopping one of its tasks, or starting one.
       if (e.tool === 'TaskStop' && !e.agentId && stopCalls.has(String((e as any).task_id ?? ''))) return next(e)
@@ -1071,18 +1092,32 @@ export const register: Register = on => {
       } else {
         if (e.agentId && ((await read($, chat)).endedAgents ?? []).includes(e.agentId)) return notRun('This task has ended.')
         if (!(await isTainted($))) return next(e)
+        // Started only by people the owner allowed for this session: one
+        // approval per person, not one per call. A grant lifts the tool hold,
+        // never the private-data rule (readscope.ts): the owner's Claude
+        // memory, keys and credentials still wait for them, for anyone.
+        const granted = startedByGranted(await read($, chat))
+        const { root, home } = await whereAmI($)
         if (!holdsOnTaintedTurn(e.tool, NAME)) {
           // Reads run unasked on a held turn only inside this session's
-          // project, and never of secret-looking files (readscope.ts).
+          // project, and never of secret-looking files.
           if (!READ_TOOLS.has(e.tool)) return next(e)
-          const { root, home } = await whereAmI($)
-          const outside = heldTurnRead(e.tool, toolArgs(e as any), root, home)
+          const outside = granted ? taskPrivateAccess(e.tool, toolArgs(e as any), root, home) : heldTurnRead(e.tool, toolArgs(e as any), root, home)
           if (!outside) return next(e)
           why = `a room message started this turn, and ${outside}`
+          privateHold = granted
+        } else if (granted) {
+          const priv = taskPrivateAccess(e.tool, toolArgs(e as any), root, home)
+          if (!priv) return next(e)
+          why = `allowed for this session, but ${priv}`
+          privateHold = true
         }
       }
       const args = toolArgs(e as any)
       if (!bridge || lastStatus?.state !== 'online') return notRun(`This needs your owner's OK (${why}), and Agent Chat isn't connected to ask.`)
+      // The people this card names, taken now: an answer can arrive after the
+      // turn moved on (a background subagent), and must grant exactly them.
+      const people: Person[] = task || privateHold ? [] : ((await read($, chat)).turnFrom ?? [])
       const v = await holdForOwner($, e, next, {
         description: `${describe(e.tool, args)} (${why})`,
         preview: JSON.stringify(args, null, 1),
@@ -1090,8 +1125,11 @@ export const register: Register = on => {
         onTerminal: { decision: 'deny', reason: 'Your owner chose to handle this in the terminal. Ask them there.' },
         onTimeout: { decision: 'deny', reason: 'Your owner did not answer within 10 minutes.' },
         onDeny: { decision: 'deny', reason: 'Your owner declined it.' },
+        // only outside a task: inside one, acting as the owner always waits for them
+        grantTo: grantLabel(people) || undefined,
       })
       if (v.decision !== 'allow') return notRun(v.reason ?? 'Not allowed.')
+      if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people) }))
     } catch (err) { return notRun(`Agent Chat couldn't get your owner's OK (${(err as Error).message}).`) }
     if (e.tool_use_id) allowedCalls.add(e.tool_use_id)
     try { return await next(e) } finally { if (e.tool_use_id) allowedCalls.delete(e.tool_use_id) }
@@ -1209,17 +1247,20 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const answer = (behavior: 'allow' | 'deny' | 'terminal') => () => {
-      void bridgeCall($, 'POST', '/permission/answer', { requestId: a.requestId, behavior, nonce: nonces.get(a.requestId) }).catch(() => {})
+    const answer = (behavior: 'allow' | 'deny' | 'terminal', scope?: 'person') => () => {
+      void bridgeCall($, 'POST', '/permission/answer', { requestId: a.requestId, behavior, scope, nonce: nonces.get(a.requestId) }).catch(() => {})
     }
     return (
       <Box flexDirection="column">
         <Text bold>{a.tool}: {a.description}</Text>
         <Text dimColor wrap="truncate-end">{a.preview.replace(/\s+/g, ' ')}</Text>
         <Text dimColor>Also sent to your Agent Chat tab (this session is in a room) — the first answer wins.</Text>
+        {a.grantTo ? <Text dimColor wrap="wrap">{`Allow ${a.grantTo} for this session: turns they start run with your normal permissions, and can act on anything already in this session.`}</Text> : null}
         <Box flexDirection="row">
           <Button key="allow" hotkey="y" variant="primary" onPress={answer('allow')}>Allow once</Button>
           <Text> </Text>
+          {a.grantTo ? <Button key="person" hotkey="a" onPress={answer('allow', 'person')}>{`Allow ${a.grantTo} for this session`}</Button> : null}
+          {a.grantTo ? <Text> </Text> : null}
           <Button key="deny" hotkey="n" onPress={answer('deny')}>Deny</Button>
           <Text> </Text>
           <Button key="terminal" hotkey="p" onPress={answer('terminal')}>Use the normal prompt</Button>
@@ -1279,6 +1320,7 @@ export const register: Register = on => {
       busy = false
       roomTurn = false
       await setTainted($, false)
+      await update($, chat, v => v.turnFrom ? { ...v, turnFrom: null } : v)
       for (const r of [...workingRooms]) setWorking($, r, false)
       void flushWakes($)
       void maybeSummarize($).catch(() => {})
