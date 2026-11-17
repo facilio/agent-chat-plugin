@@ -21,7 +21,7 @@ function engine(on: any) {
   const seed = (key: string, value: unknown) => { kept.set(key, { value, version: (kept.get(key)?.version ?? 0) + 1 }) }
   on('state.get', (_: any, e: any) => ({ value: kept.get(e.key) ?? { value: undefined, version: 0 } }))
   on('state.set', (_: any, e: any) => { seed(e.key, e.value); return { value: { isSet: true, version: kept.get(e.key)!.version } } })
-  return { seed: (v: unknown) => seed(CHAT.key, v) }
+  return { seed: (v: unknown) => seed(CHAT.key, v), get: () => kept.get(CHAT.key)?.value }
 }
 const ran = (r: any) => !r?.isError && r?.text !== undefined ? r.text === 'ran' || r.result === 'ran' : r?.result === 'ran'
 
@@ -82,4 +82,24 @@ test("another agent's peer message doesn't count as a task's report", async ($, 
   const r: any = await $.prompt.submit({ text: '<agent-message from="someone-else">\nhello', origin: { kind: 'peer' } } as any)
   expect(r.drop).toBeUndefined()
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(true)
+})
+
+test('after a plugin update (empty state), the session comes back to its rooms', async ($, on) => {
+  const st = engine(on)
+  const store = new Map<string, unknown>([['sessions', { cc1: { sessionId: 'ss_kept', joined: ['rm_9'], roomNames: { rm_9: 'kept' }, cursors: {}, at: 1 } }]])
+  on('store.get', (_: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', (_: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
+  on('session.id', () => ({ value: 'cc1' }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('tool.list', () => ({ value: [] }))
+  on('tool.register', (_: any, e: any) => ({ value: { tool: `mcp__agent-chat__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'agent-chat' } }))
+  on('agent.register', () => ({ value: { agent: 'agent-chat:task' } }))
+  on('agent.list', () => ({ value: [] }))
+  on('process.spawn', async function* () { throw new Error('no processes in a test') } as any)
+  st.seed(undefined)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as any)
+  const got: any = st.get()
+  expect(got?.value?.sessionId).toBe('ss_kept')
+  expect(got?.value?.joined).toEqual(['rm_9'])
 })

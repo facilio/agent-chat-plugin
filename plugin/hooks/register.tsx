@@ -100,7 +100,36 @@ async function state($: $): Promise<ChatState> {
   if (s.sessionId) return s
   const sessionId = `ss_${rand(12)}`
   await update($, chat, v => ({ ...v, sessionId: v.sessionId || sessionId }))
+  await remember($)
   return read($, chat)
+}
+
+// A plugin update loads the new version with its $.state empty: twice (0.9.2 to
+// 0.10.0, 0.10.0 to 0.10.1, /plugin update then /reload-plugins) the session came
+// back in no rooms under a new identity. So this session's identity and rooms
+// are also kept in $.store (the plugin's own file, which outlives versions),
+// under Claude Code's session id, and put back when state comes up empty.
+const SESSIONS_KEPT = 30
+type Kept = { sessionId: string; joined: string[]; roomNames: Record<string, string>; cursors: Record<string, string>; pinnedLabel?: string; at: number }
+async function remember($: $) {
+  try {
+    const cc = await $.session.id()
+    const s = await read($, chat)
+    if (!s.sessionId) return
+    const all = { ...((await $.store.get('sessions')) as Record<string, Kept> | undefined ?? {}) }
+    all[cc] = { sessionId: s.sessionId, joined: s.joined, roomNames: s.roomNames, cursors: s.cursors, pinnedLabel: s.pinnedLabel, at: Date.now() }
+    const keep = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, SESSIONS_KEPT)
+    await $.store.set('sessions', Object.fromEntries(keep))
+  } catch { /* best effort */ }
+}
+async function restore($: $) {
+  try {
+    const s = await read($, chat)
+    if (s.sessionId) return
+    const kept = ((await $.store.get('sessions')) as Record<string, Kept> | undefined)?.[await $.session.id()]
+    if (!kept?.sessionId) return
+    await update($, chat, v => v.sessionId ? v : ({ ...v, sessionId: kept.sessionId, joined: kept.joined ?? [], roomNames: kept.roomNames ?? {}, cursors: kept.cursors ?? {}, pinnedLabel: kept.pinnedLabel }))
+  } catch { /* best effort */ }
 }
 
 async function bridgeCall<R = any>($: $, method: 'GET' | 'POST', path: string, body?: unknown): Promise<R> {
@@ -201,7 +230,11 @@ async function onEvent($: $, ev: any) {
     case 'status': {
       lastStatus = ev
       if (ev.session?.label) await update($, chat, v => ({ ...v, label: ev.session.label }))
-      if (ev.rooms) await update($, chat, v => ({ ...v, joined: ev.rooms.map((r: any) => r.id), roomNames: Object.fromEntries(ev.rooms.map((r: any) => [r.id, r.name])) }))
+      if (ev.rooms) {
+        const before = (await read($, chat)).joined.join(',')
+        await update($, chat, v => ({ ...v, joined: ev.rooms.map((r: any) => r.id), roomNames: Object.fromEntries(ev.rooms.map((r: any) => [r.id, r.name])) }))
+        if (ev.rooms.map((r: any) => r.id).join(',') !== before) await remember($)
+      }
       await showStatus($)
       return
     }
@@ -360,7 +393,7 @@ async function finishTask($: $, t: TaskRec, state: 'done' | 'stopped' | 'failed'
   // any reply. One that looks private, or a room under review, is left to the
   // terminal.
   if (state === 'done' && summary && !posted) {
-    const text = `Result of the task (it couldn't post it itself):\n${summary.slice(0, 3500)}${summary.length > 3500 ? '…' : ''}`
+    const text = `Result of the task (it posted none itself):\n${summary.slice(0, 3500)}${summary.length > 3500 ? '…' : ''}`
     const why = await replyNeedsOwner($, { room_id: t.roomId, text }).catch(() => 'the guard could not run')
     if (why) $.ui.log(`Agent Chat: task ${t.id} posted nothing in #${t.roomName}, and its summary wasn't posted for it (${why}).`)
     else await bridgeCall($, 'POST', '/send', { roomId: t.roomId, text }).catch(err => $.ui.log(`Agent Chat: couldn't post task ${t.id}'s summary (${(err as Error).message}).`))
@@ -922,6 +955,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // A reload (or plugin update) mid-session: come back to the same rooms.
+    await restore($)
     if ((await read($, chat)).joined.length) void ensureBridge($).catch(err => $.ui.log(`Agent Chat: ${err.message}`, { to: 'debug' }))
     // Tools first: without `reply` the session can hear a room but never answer it.
     await ensureTools($, true)
