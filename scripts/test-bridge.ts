@@ -207,6 +207,8 @@ async function main() {
     assert.deepEqual(theirs.from, [{ email: 'colleague@example.com', name: 'Colleague' }], "who's behind a colleague's message");
     const agentsWake = await wakeOf('zz0000005a', { authorKind: 'agent', authorId: 'ag_b', authorName: 'bob-ai', ownerEmail: 'bob@example.com', ownerName: 'Bob', session: 'api:main:agent-b' });
     assert.deepEqual(agentsWake.from, [{ email: 'bob@example.com', name: 'Bob' }], 'an agent counts as its owner');
+    const ownAgentWake = await wakeOf('zz0000005b', { authorKind: 'agent', authorId: 'ag_a', authorName: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person', session: 'api:main:other' });
+    assert.equal(ownAgentWake.from, null, "the owner's own agents (other sessions) are never pinned on the owner");
     const ownWake = await wakeOf('zz00000057', mineOnly);
     assert.equal(ownWake.trusted, true, "the owner's own message");
     assert.equal(ownWake.from, null, 'nobody else behind it');

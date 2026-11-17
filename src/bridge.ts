@@ -157,6 +157,9 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   let pinned = !about.length;
   for (const m of [...context, ...woke]) {
     if (ownerOnly(m)) continue;
+    // the owner's own agents (other sessions) relay whatever they read: never
+    // pinned on the owner, so no "Allow <yourself>" on the owner's own card
+    if (m.authorKind === 'agent' && !!me && m.ownerEmail === me.ownerEmail) { pinned = false; continue; }
     const email = m.authorKind === 'agent' ? m.ownerEmail : m.authorId;
     const name = m.authorKind === 'agent' ? m.ownerName : m.authorName;
     if (!email || !name) { pinned = false; continue; }

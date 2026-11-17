@@ -23,7 +23,7 @@ import type { Approval, ChatState, Person, TaskRec } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
-import { OWNER_ACTS, holdsOnTaintedTurn, toolArgs } from './hold.ts'
+import { OWNER_ACTS, coveredBy, grantLabel, holdsOnTaintedTurn, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
 type $ = EngineInterface
@@ -318,9 +318,8 @@ async function flushWakes($: $) {
   await setTainted($, batch.some(w => !w.trusted))
   // the people behind this turn (for "Allow <person> for this session"); null
   // if any untrusted part of it can't be pinned on people
-  const held = batch.filter(w => !w.trusted)
-  const from = held.some(w => !w.from) ? null : [...new Map(held.flatMap(w => w.from ?? []).map(p => [p.email, p])).values()]
-  await update($, chat, v => ({ ...v, turnFrom: from?.length ? from : null }))
+  const from = turnPeople(batch)
+  await update($, chat, v => ({ ...v, turnFrom: from }))
   for (const r of wakeRooms) setWorking($, r, true)
   wakeRooms.clear()
   await ensureToolsSoon($)
@@ -747,8 +746,7 @@ type Verdict = { decision: 'allow' | 'deny' | 'ask'; reason?: string; [k: string
 // no pane can be placed (Remote Control, headless); otherwise fall back to the
 // normal prompt.
 // Who a held turn's "Allow … for this session" would cover, as the card says it.
-const grantLabel = (p: Person[]) => p.length === 1 ? p[0].name : p.length === 2 ? `${p[0].name} and ${p[1].name}` : ''
-const startedByGranted = (s: ChatState) => !!s.turnFrom?.length && s.turnFrom.every(p => (s.grantedPeople ?? []).some(g => g.email === p.email))
+const startedByGranted = (s: ChatState) => coveredBy(s.grantedPeople, s.turnFrom)
 async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict; grantTo?: string }): Promise<any> {
   const ids = 'abcdefghijkmnopqrstuvwxyz'
   const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
@@ -1058,6 +1056,9 @@ export const register: Register = on => {
       }
       const args = toolArgs(e as any)
       if (!bridge || lastStatus?.state !== 'online') return notRun(`This needs your owner's OK (${why}), and Agent Chat isn't connected to ask.`)
+      // The people this card names, taken now: an answer can arrive after the
+      // turn moved on (a background subagent), and must grant exactly them.
+      const people: Person[] = task ? [] : ((await read($, chat)).turnFrom ?? [])
       const v = await holdForOwner($, e, next, {
         description: `${describe(e.tool, args)} (${why})`,
         preview: JSON.stringify(args, null, 1),
@@ -1066,10 +1067,10 @@ export const register: Register = on => {
         onTimeout: { decision: 'deny', reason: 'Your owner did not answer within 10 minutes.' },
         onDeny: { decision: 'deny', reason: 'Your owner declined it.' },
         // only outside a task: inside one, acting as the owner always waits for them
-        grantTo: task ? undefined : grantLabel((await read($, chat)).turnFrom ?? []) || undefined,
+        grantTo: grantLabel(people) || undefined,
       })
       if (v.decision !== 'allow') return notRun(v.reason ?? 'Not allowed.')
-      if (v.person) await update($, chat, x => ({ ...x, grantedPeople: [...new Map([...(x.grantedPeople ?? []), ...(x.turnFrom ?? [])].map(p => [p.email, p])).values()] }))
+      if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people) }))
     } catch (err) { return notRun(`Agent Chat couldn't get your owner's OK (${(err as Error).message}).`) }
     if (e.tool_use_id) allowedCalls.add(e.tool_use_id)
     try { return await next(e) } finally { if (e.tool_use_id) allowedCalls.delete(e.tool_use_id) }
@@ -1193,6 +1194,7 @@ export const register: Register = on => {
         <Text bold>{a.tool}: {a.description}</Text>
         <Text dimColor wrap="truncate-end">{a.preview.replace(/\s+/g, ' ')}</Text>
         <Text dimColor>Also sent to your Agent Chat tab (this session is in a room) — the first answer wins.</Text>
+        {a.grantTo ? <Text dimColor wrap="wrap">{`Allow ${a.grantTo} for this session: turns they start run with your normal permissions, and can act on anything already in this session.`}</Text> : null}
         <Box flexDirection="row">
           <Button key="allow" hotkey="y" variant="primary" onPress={answer('allow')}>Allow once</Button>
           <Text> </Text>
@@ -1257,6 +1259,7 @@ export const register: Register = on => {
       busy = false
       roomTurn = false
       await setTainted($, false)
+      await update($, chat, v => v.turnFrom ? { ...v, turnFrom: null } : v)
       for (const r of [...workingRooms]) setWorking($, r, false)
       void flushWakes($)
       void maybeSummarize($).catch(() => {})
