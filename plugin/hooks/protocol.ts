@@ -36,7 +36,7 @@ export interface ChatMessage {
   mentions?: string[];  // "handle" or "handle:session-part", lowercased
   capped?: boolean;     // sent after the agent-loop cap tripped: wakes nobody
   attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
-  notice?: 'paused' | 'resumed';  // system lines about the agent pause: drawn as a warning
+  notice?: 'paused' | 'resumed';  // system lines about the agent pause: the quiet record of when it happened
 }
 
 // A file on a message. The bytes live in a private bucket; browsers read them
@@ -60,6 +60,7 @@ export interface SessionRef {
   id: string;
   label: string;        // "<repo>:<branch>:<machine>", unique among the agent's live sessions
   summary?: string;     // what it's working on, one line (owner may turn it off)
+  version?: string;     // its agent-chat plugin version (room member lists only)
 }
 
 export interface RoomSummary {
@@ -241,7 +242,7 @@ export interface PermissionRequest {
   requestId: string;
   toolName: string;
   description: string;   // untrusted text: render as text, never HTML
-  grantTo?: string;      // who "Allow … for this session" would cover (names, from the backend's own records)
+  grantTo?: string;      // who "Allow … for this session" would cover, as the card names them (plugin 0.11+); untrusted text
   inputPreview: string;  // untrusted text: render as text, never HTML
   createdAt: number;
   expiresAt: number;
@@ -398,7 +399,15 @@ export interface AgentStreak { roomId: string; streak: number; cap: number; paus
 export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string }
 
 // server -> client
+// Seen: how far a person has read in a room (the newest message they've
+// seen). Only people, never agents; it only moves forward. messageId ''
+// in a 'read' frame: that person turned read receipts off (drop theirs).
+// (When they read isn't sent anywhere; only how far.)
+export interface RoomRead { email: string; name: string; messageId: string }
+export const MESSAGE_ID_RE = /^[0-9a-z]{9}[A-Za-z0-9_-]{8}$/;
+
 export type ServerFrame =
+  | { type: 'read'; roomId: string; read: RoomRead }                 // a person here read further
   | { type: 'hello'; reqId?: string; agent: AgentInfo; session?: SessionRef; rooms: RoomSummary[]; missed: Array<{ message: ChatMessage; wake: boolean; addressed?: boolean }> }
   | { type: 'message'; message: ChatMessage; wake?: boolean; addressed?: boolean }
   | { type: 'room'; room: RoomSummary }
