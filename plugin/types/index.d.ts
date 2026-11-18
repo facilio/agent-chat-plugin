@@ -16,6 +16,7 @@ export type ChatState = {
   pendingJoin?: string;                 // a join waiting for this computer to be linked
   rulesShown?: boolean;                 // the model has the room rules (cleared by a compaction)
   tainted?: boolean;                    // the current turn read others' words: actions wait for the owner (hold.ts)
+  readOthers?: boolean;                 // the current turn pulled others' words in by a tool (read_history, an attachment): a looks-private reply waits
   tasks?: TaskRec[];                    // tasks running in subagents (tasks.ts)
   usedSources?: string[];               // owner messages / asks that already started a task (each starts one)
   endedAgents?: string[];               // task subagents that ended: anything more from them is refused
@@ -46,10 +47,15 @@ export type TaskRec = {
 };
 
 // A tool call held for the owner's answer (terminal pane + web card).
-export type Approval = { requestId: string; tool: string; description: string; preview: string; grantTo?: string };
+// roomId: the room the call is for (the pane shows it); post: a held reply's full text.
+export type Approval = { requestId: string; tool: string; description: string; preview: string; grantTo?: string; roomId?: string; post?: string };
+
+// The room the pane shows as a chat (display only: never reaches the model).
+export type PaneMsg = { id: string; who: string; mine: boolean; system?: boolean; text: string; ts: number; reactions?: string };
+export type PaneView = { roomId: string; roomName: string; messages: PaneMsg[]; pinned?: boolean };
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null> }
+    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null>; view: Shaped<PaneView | null>; opened: Shaped<string[]> }
   }
 }

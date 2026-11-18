@@ -186,7 +186,7 @@ async function main() {
     sock.send(JSON.stringify({ type: 'message', message: msg('zz0000003', 'what is "our" region?', { authorId: owner, authorName: 'Owner' }), wake: true, addressed: true }));
     const wake = await wakeP;
     assert.equal(events.filter((e) => e.type === 'wake').length, 1, 'rooms this session did not join are ignored');
-    assert.match(wake.text, /^<agent-chat room_id="rm_1" room="general" from="Owner \(@owner\)" from_kind="user" from_is_owner="true" addressed="true" message_id="zz0000003">\n/);
+    assert.match(wake.text, /^<agent-chat room_id="rm_1" room="general" from="Owner \(@owner\)" from_kind="user" from_is_owner="true" addressed="true" message_id="zz0000003" count="1">\n/);
     assert.match(wake.text, /\[earlier in #general\]\nColleague \(@colleague\): hi @bob\n---\nwhat is "our" region\?\n<\/agent-chat>$/);
     assert.ok(events.some((e) => e.type === 'cursor' && e.roomId === 'rm_1' && e.id === 'zz0000003'), 'cursor reported for the module to keep');
     // an agent's message names its session; this session's own messages never wake it

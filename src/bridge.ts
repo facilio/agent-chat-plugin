@@ -146,7 +146,7 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   lines.push(woke.length > 1 ? `${who(last)}: ${withFiles(last)}` : withFiles(last));
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}"${roomType ? ` room_type="${roomType}"` : ''} from="${attr(who(last))}" from_kind="${last.authorKind}" `
-    + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}">`;
+    + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}" count="${woke.length}">`;
   // trusted: everything in it is the owner's own (or a system line) and it
   // carries no room description. Anything else makes it a held turn (hold.ts).
   const ownerOnly = (m: ChatMessage) => m.authorKind === 'system' || (m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail);
