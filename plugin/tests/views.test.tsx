@@ -167,3 +167,16 @@ test('/agent-chat pane close unpins the view and closes it; pane test needs a co
   const t: any = await $.command.run({ command: 'agent-chat', args: 'pane test' } as any)
   expect(String(t.text)).toMatch(/isn't connected/)
 })
+
+test('a bare /agent-chat pane closes the pane when it is open', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, pinned: true } })
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  on('ui.panes', () => ({ value: [{ id: 'agent-chat', title: '#general', isShown: true, isFocused: false, isPlaced: true }] }))
+  const closed: string[] = []
+  on('ui.close', (_: any, e: any) => { closed.push(e.id); return { value: undefined } })
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'pane' } as any)
+  expect(String(r.text)).toMatch(/Pane closed/)
+  expect(closed).toContain('agent-chat')
+})

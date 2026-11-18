@@ -1019,6 +1019,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat label <text|auto>  how this session is shown (default repo:branch:machine)
   /agent-chat summary <on|off|text>  the one-line "working on" shown next to the label
   /agent-chat connect            link this computer again (new link)
+  /agent-chat pane               open the room chat in a pane, or close it (a toggle)
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
   /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
   /agent-chat pane close         close it (it opens again only when something needs your OK)
@@ -1052,6 +1053,7 @@ async function command($: $, args: string): Promise<string> {
   if (err) return err
   const [sub = 'help', ...rest] = args.trim().split(/\s+/)
   const arg = rest.join(' ').trim()
+  const rawArg = arg
   switch (sub) {
     case 'join': {
       if (!arg) return 'Which room? /agent-chat join <room>   (see /agent-chat rooms)'
@@ -1222,6 +1224,8 @@ async function command($: $, args: string): Promise<string> {
         : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for this session" on a card stops asking for turns that person starts.'
     }
     case 'pane': {
+      // Bare `/agent-chat pane` toggles: opens the room chat, or closes it.
+      const arg = rawArg || ((await $.ui.panes().catch(() => [])).some(p => p.id === PANE) ? 'close' : 'view')
       if (arg === 'off') {
         await $.store.set('paneOff', true)
         await $.ui.close({ id: PANE }).catch(() => {})
@@ -1265,7 +1269,7 @@ async function command($: $, args: string): Promise<string> {
         void paneToEnd($)
         return `Showing #${s.roomNames[roomId] ?? roomId} in the pane. Close it with Esc or ctrl+x x.`
       }
-      return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane on|off|view [room]|close|test)`
+      return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane [on|off|view [room]|close|test]; bare pane toggles)`
     }
     default:
       return HELP
