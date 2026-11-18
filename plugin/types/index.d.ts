@@ -8,6 +8,7 @@ export type ChatState = {
   label?: string;                       // as the server confirmed it
   pinnedLabel?: string;                 // set by /agent-chat label …
   summary?: string;                     // what this session is working on
+  title?: string;                       // the Claude Code session name (ListAgents / /rename), shown to the owner only
   pinnedSummary?: boolean;              // set by hand: don't auto-update
   summaryAt?: number;
   prompts: string[];                    // the person's own recent prompts (summary input)

@@ -42,6 +42,7 @@ interface Config {
   sessionId: string;
   label: string;
   summary?: string;
+  title?: string;                      // the Claude Code session name (owner-only on the server)
   rooms?: string[];                    // re-attach after a module reload
   cursors?: Record<string, string>;
   emailHint?: string;                  // Claude Code's login, for the pairing page's warning
@@ -260,7 +261,7 @@ function connect(token: string) {
     ping = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send('{"action":"ping"}'), 4 * 60_000);
     sock.send(JSON.stringify({
       action: 'hello', reqId: 'hello', version: VERSION, features: ['sessions'], cursors,
-      session: { id: cfg.sessionId, label: session?.label ?? cfg.label, summary: session ? session.summary : cfg.summary, rooms: [...joined] },
+      session: { id: cfg.sessionId, label: session?.label ?? cfg.label, summary: session ? session.summary : cfg.summary, title: session ? session.title : cfg.title, rooms: [...joined] },
     }));
   });
 
@@ -551,7 +552,7 @@ const routes: Record<string, Handler> = {
   // A task this session runs in a subagent: running / done / stopped / failed.
   'POST /task': async (b) => call({ action: 'task', roomId: String(b.roomId), taskId: String(b.taskId), title: String(b.title ?? ''), state: String(b.state) }),
   'POST /session': async (b) => {
-    const s = await call({ action: 'session', label: b.label, summary: b.summary }) as SessionRef;
+    const s = await call({ action: 'session', label: b.label, summary: b.summary, title: b.title }) as SessionRef;
     session = s; status();
     return s;
   },

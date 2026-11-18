@@ -61,6 +61,10 @@ export interface SessionRef {
   label: string;        // "<repo>:<branch>:<machine>", unique among the agent's live sessions
   summary?: string;     // what it's working on, one line (owner may turn it off)
   version?: string;     // its agent-chat plugin version (room member lists only)
+  // Its Claude Code session name (what /rename sets and other sessions address
+  // it by). Can say what the owner is working on, so only the owner's own views
+  // carry it; everyone else sees the label.
+  title?: string;
 }
 
 export interface RoomSummary {
@@ -187,6 +191,12 @@ export function cleanLabel(v: unknown): string {
     .filter(Boolean);
   const label = parts.join(':');
   return SESSION_LABEL_RE.test(label) ? label : 'session';
+}
+
+export const MAX_TITLE = 80;
+export function cleanTitle(v: unknown): string | undefined {
+  const s = String(v ?? '').replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE);
+  return s || undefined;
 }
 
 export function cleanSummary(v: unknown): string | undefined {
@@ -329,6 +339,7 @@ export interface SessionHello {
   id: string;           // stable for the Claude Code session's life (minted by the plugin)
   label: string;        // proposed; the server may suffix it to keep it unique
   summary?: string;
+  title?: string;       // the Claude Code session name (owner-only, see SessionRef)
   rooms?: string[];     // rooms this session is attached to (after a reconnect)
 }
 
@@ -338,7 +349,7 @@ export type ClientFrame =
   | { action: 'hello'; reqId?: string; version?: string; cursors?: Record<string, string>; features?: string[]; session?: SessionHello }
   | { action: 'join'; reqId?: string; room: string }          // room id, or a room name the owner is in
   | { action: 'leave'; reqId?: string; roomId?: string; reason?: 'exit' } // omit roomId: leave every room; exit = Claude Code is ending the session
-  | { action: 'session'; reqId?: string; label?: string; summary?: string | null }
+  | { action: 'session'; reqId?: string; label?: string; summary?: string | null; title?: string | null }
   | { action: 'send'; reqId?: string; roomId: string; text: string }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }

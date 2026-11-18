@@ -20,7 +20,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState, Person, TaskRec } from '../types'
-import { MAX_SUMMARY, cleanLabel, cleanSummary, versionAtLeast } from './protocol.ts'
+import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { OWNER_ACTS, READ_TOOLS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
@@ -192,7 +192,7 @@ async function ensureBridge($: $): Promise<void> {
     const child = $.process.spawn({
       argv: ['node', `${$.plugin.root}/dist/bridge.cjs`],
       env,
-      input: JSON.stringify({ secret, socketPath, sessionId: s.sessionId, label, summary: s.summary, rooms: s.joined, cursors: s.cursors, emailHint }),
+      input: JSON.stringify({ secret, socketPath, sessionId: s.sessionId, label, summary: s.summary, title: s.title, rooms: s.joined, cursors: s.cursors, emailHint }),
     })
     let ready!: () => void
     let failed!: (e: Error) => void
@@ -567,6 +567,40 @@ async function maybeSummarize($: $, force = false) {
   await bridgeCall($, 'POST', '/session', { summary }).catch(() => {})
 }
 
+// The session's own name, as other Claude Code sessions (SendMessage,
+// ListAgents) and /rename know it, so the owner can tell which session is in
+// which room. Claude Code keeps it in <config>/sessions/<pid>.json; hooks get
+// only the conversation title (session_title), the fallback. Only the owner
+// sees it: the server strips it from everyone else's view of the room.
+let sessionFile: string | null | undefined   // undefined: not looked for yet
+let titleHint: string | undefined
+async function sessionName($: $): Promise<string | undefined> {
+  try {
+    if (sessionFile === undefined) {
+      sessionFile = null
+      const dir = `${(await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${await $.env.get('HOME')}/.claude`}/sessions`
+      const id = await $.session.id()
+      for (const f of await $.fs.list(dir)) {
+        if (f.kind !== 'file' || !/^\d+\.json$/.test(f.name)) continue
+        const text = await $.fs.read(`${dir}/${f.name}`).catch(() => '')
+        if (typeof text === 'string' && text.includes(id) && JSON.parse(text).sessionId === id) { sessionFile = `${dir}/${f.name}`; break }
+      }
+    }
+    if (sessionFile) {
+      const d = JSON.parse(await $.fs.read(sessionFile) as string)
+      if (typeof d.name === 'string' && d.name) return d.name
+    }
+  } catch { sessionFile = undefined }
+  return titleHint
+}
+async function refreshTitle($: $): Promise<void> {
+  const title = cleanTitle(await sessionName($))
+  const s = await read($, chat)
+  if (!title || title === s.title) return
+  await update($, chat, v => ({ ...v, title }))
+  if (bridge) await bridgeCall($, 'POST', '/session', { title }).catch(() => {})
+}
+
 // --------------------------------------------------------- the model's side
 const INSTRUCTIONS = (s: ChatState, owner: string) => `
 # Agent Chat
@@ -705,7 +739,7 @@ async function runTool($: $, name: string, args: any): Promise<string> {
     case 'list_rooms': {
       const rooms = await bridgeCall<any[]>($, 'GET', '/rooms')
       if (!rooms.length) return 'Your owner is in no rooms yet. Rooms are created at https://chat.facilio.bot.'
-      return inert(rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n'))
+      return inert(rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.title ? `${x.title} (${x.label})` : x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n'))
     }
     case 'read_history': {
       const msgs = await bridgeCall<any[]>($, 'POST', '/history', { roomId: String(args.room_id), limit: args.limit, before: args.before })
@@ -924,14 +958,14 @@ async function command($: $, args: string): Promise<string> {
     case 'rooms':
       return runTool($, 'list_rooms', {})
     case 'status': {
-      if (!bridge) return `Not connected. /agent-chat join <room> to start. ${versionLine(await pluginVersion($))}`
+      if (!bridge) { const t = (await read($, chat)).title; return `Not connected. /agent-chat join <room> to start.${t ? ` This session: ${t}.` : ''} ${versionLine(await pluginVersion($))}` }
       const st = await bridgeCall($, 'GET', '/status')
       const s = await read($, chat)
       return [
         `state: ${st.state}${st.message ? ` (${st.message})` : ''}`,
         versionLine(await pluginVersion($)),
         st.me ? `agent: @${st.me.name} (${st.me.ownerName}'s agent)` : null,
-        `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}`,
+        `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}${s.title ? `  · name: ${s.title} (only you see it)` : ''}`,
         `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
         `rooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}`,
         `approvals: ${(await $.store.get('paneOff')) === true ? 'normal prompt only (pane off)' : 'web and pane, for requests a room message led to'}`,
@@ -1072,6 +1106,7 @@ export const register: Register = on => {
     const started = await next(e)
     // A reload (or plugin update) mid-session: come back to the same rooms.
     await restore($)
+    await refreshTitle($).catch(() => {})
     if ((await read($, chat)).joined.length) void ensureBridge($).catch(err => $.ui.log(`Agent Chat: ${err.message}`, { to: 'debug' }))
     // Tools first: without `reply` the session can hear a room but never answer it.
     await ensureTools($, true)
@@ -1347,8 +1382,14 @@ export const register: Register = on => {
     // In a room, any turn may need reply: put back tools the session lost
     // (the person's own prompt never passes through flushWakes).
     if ((await read($, chat)).joined.length) await ensureToolsSoon($)
+    // The person may have renamed the session (/rename) since: pick it up.
+    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') void refreshTitle($).catch(() => {})
     return next(e)
   })
+
+  // The conversation's title, for when the session's own name can't be read.
+  on('classic.SessionStart', async ($, e, next) => { if (typeof e.session_title === 'string' && e.session_title) titleHint = e.session_title; return next(e) })
+  on('classic.UserPromptSubmit', async ($, e, next) => { if (typeof e.session_title === 'string' && e.session_title) titleHint = e.session_title; return next(e) })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) busy = true

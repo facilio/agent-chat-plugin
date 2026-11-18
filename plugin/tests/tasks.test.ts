@@ -181,3 +181,22 @@ test('/agent-chat update outside a marketplace install runs nothing and says so'
   expect(String(r.text)).toMatch(/isn't a marketplace install/)
   expect(ran.length).toBe(0)
 })
+
+test("the session's Claude Code name (ListAgents, /rename) is read from its sessions file and shown in status", async ($, on) => {
+  const st = engine(on)
+  st.seed(chatWith({ joined: [] }))
+  const files: Record<string, string> = {
+    '/Users/me/.claude/sessions/111.json': JSON.stringify({ pid: 111, sessionId: 'other', name: 'not-me' }),
+    '/Users/me/.claude/sessions/222.json': JSON.stringify({ pid: 222, sessionId: 'cc1', name: 'chillout', nameSource: 'custom' }),
+  }
+  on('session.id', () => ({ value: 'cc1' }))
+  on('fs.list', (_: any, e: any) => ({ value: String(e.path).endsWith('/sessions') ? [{ name: '111.json', kind: 'file', size: 1 }, { name: '111.abc.key', kind: 'file', size: 1 }, { name: '222.json', kind: 'file', size: 1 }] : [] }))
+  on('fs.read', (_: any, e: any) => files[e.path] !== undefined ? { value: files[e.path] } : { value: '{"version":"0.11.4"}' })
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  on('prompt.submit', (_: any, e: any) => ({ text: e.text }))
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as any)
+  for (let i = 0; i < 20 && !(st.get() as any)?.value?.title; i++) await new Promise(r => setTimeout(r, 5))
+  expect((st.get() as any)?.value?.title).toBe('chillout')
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'status' } as any)
+  expect(String(r.text)).toMatch(/This session: chillout\./)
+})
