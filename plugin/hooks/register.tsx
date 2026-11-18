@@ -164,7 +164,7 @@ async function autoLabel($: $): Promise<string> {
   const repo = await $.session.repo().catch(() => null)
   const root = repo?.root ?? await $.session.root()
   const name = (repo?.name ?? repo?.remote?.replace(/\.git$/, '') ?? root).split(/[/:]/).filter(Boolean).pop() ?? 'session'
-  const branch = repo ? (await git(['rev-parse', '--abbrev-ref', 'HEAD'])) || 'detached' : 'no-git'
+  const branch = repo ? (await git(['rev-parse', '--abbrev-ref', 'HEAD'])) || 'detached' : ''  // no repo: folder:machine
   let host = ''
   try { host = (await $.process.run(['hostname', '-s'], { timeoutMs: 2000 })).stdout.trim() } catch { /* none */ }
   // "Manthoshs-MacBook-Pro" -> "macbook-pro"
@@ -567,14 +567,14 @@ async function maybeSummarize($: $, force = false) {
   await bridgeCall($, 'POST', '/session', { summary }).catch(() => {})
 }
 
-// The session's own name, as other Claude Code sessions (SendMessage,
-// ListAgents) and /rename know it, so the owner can tell which session is in
-// which room. Claude Code keeps it in <config>/sessions/<pid>.json; hooks get
-// only the conversation title (session_title), the fallback. Only the owner
-// sees it: the server strips it from everyone else's view of the room.
+// The session's conversation title, shown to its owner only (the server strips
+// it from everyone else's view): what /rename sets, else the title Claude Code
+// gave the conversation. Hooks hand it over as session_title; until one has,
+// the session's name as ListAgents shows it (<config>/sessions/<pid>.json).
 let sessionFile: string | null | undefined   // undefined: not looked for yet
 let titleHint: string | undefined
 async function sessionName($: $): Promise<string | undefined> {
+  if (titleHint) return titleHint
   try {
     if (sessionFile === undefined) {
       sessionFile = null
@@ -591,7 +591,10 @@ async function sessionName($: $): Promise<string | undefined> {
       if (typeof d.name === 'string' && d.name) return d.name
     }
   } catch { sessionFile = undefined }
-  return titleHint
+  return undefined
+}
+function takeTitle($: $, t: unknown): void {
+  if (typeof t === 'string' && t.trim() && t !== titleHint) { titleHint = t; void refreshTitle($).catch(() => {}) }
 }
 async function refreshTitle($: $): Promise<void> {
   const title = cleanTitle(await sessionName($))
@@ -965,7 +968,7 @@ async function command($: $, args: string): Promise<string> {
         `state: ${st.state}${st.message ? ` (${st.message})` : ''}`,
         versionLine(await pluginVersion($)),
         st.me ? `agent: @${st.me.name} (${st.me.ownerName}'s agent)` : null,
-        `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}${s.title ? `  · name: ${s.title} (only you see it)` : ''}`,
+        `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}${s.title ? `  · title: ${s.title} (only you see it)` : ''}`,
         `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
         `rooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}`,
         `approvals: ${(await $.store.get('paneOff')) === true ? 'normal prompt only (pane off)' : 'web and pane, for requests a room message led to'}`,
@@ -1387,9 +1390,9 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The conversation's title, for when the session's own name can't be read.
-  on('classic.SessionStart', async ($, e, next) => { if (typeof e.session_title === 'string' && e.session_title) titleHint = e.session_title; return next(e) })
-  on('classic.UserPromptSubmit', async ($, e, next) => { if (typeof e.session_title === 'string' && e.session_title) titleHint = e.session_title; return next(e) })
+  // The conversation title (it changes with /rename).
+  on('classic.SessionStart', async ($, e, next) => { takeTitle($, e.session_title); return next(e) })
+  on('classic.UserPromptSubmit', async ($, e, next) => { takeTitle($, e.session_title); return next(e) })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) busy = true
