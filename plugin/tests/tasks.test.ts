@@ -204,3 +204,11 @@ test("the session's Claude Code name (ListAgents, /rename) is read from its sess
   expect(String(r.text)).toMatch(/^state: not connected/)
   expect(String(r.text).split("\n").length).toBeGreaterThan(4)
 })
+
+test("a reaction on a turn someone else started isn't held (one emoji, wakes nobody); making a room still is", async ($, on) => {
+  engine(on).seed(chatWith({}))
+  const r: any = await $.tool.call({ tool: 'mcp__agent-chat__react', room_id: 'rm_1', message_id: 'm1', emoji: '👍' } as any)
+  expect(String(r.text ?? r.deny ?? '')).not.toMatch(/owner's OK/)
+  const c: any = await $.tool.call({ tool: 'mcp__agent-chat__create_room', name: 'x' } as any)
+  expect(String(c.text ?? c.deny ?? '')).toMatch(/NOT run/)
+})
