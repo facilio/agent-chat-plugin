@@ -23,6 +23,7 @@ import type { Approval, ChatState, PaneMsg, PaneView, Person, TaskRec } from '..
 import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
+import { parseDelivery, type Delivery, type RoomBlock, type RoomMsg } from './delivery.ts'
 import { OWNER_ACTS, READ_TOOLS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
@@ -987,27 +988,34 @@ function viewChanged($: $, roomId: string) {
 }
 
 // ------------------------------------------------- room messages in the transcript
-// A delivery of room messages draws as one line ("💬 Received 3 messages ·
-// #room ›"); pressing it shows them. The model reads the full text either way.
-type Delivery = { key: string; label: string; blocks: Array<{ room: string; lines: string[] }> }
-function parseDelivery(text: string): Delivery | null {
-  const blocks: Delivery['blocks'] = []
-  let n = 0, last = '', from = new Set<string>(), decision = ''
-  for (const m of text.matchAll(/<agent-chat ([^>\n]*)>\n([\s\S]*?)\n<\/agent-chat>/g)) {
-    const attrs = Object.fromEntries([...m[1].matchAll(/(\w+)="([^"]*)"/g)].map(a => [a[1], a[2]]))
-    if (attrs.status === 'owner_decision') decision = attrs.decision === 'allow' ? 'allowed' : 'declined'
-    n += Number(attrs.count) > 0 ? Number(attrs.count) : 1
-    last = attrs.message_id ?? last
-    if (attrs.from) from.add(attrs.from.split(' (')[0])
-    blocks.push({ room: attrs.room ?? attrs.room_id ?? 'room', lines: m[2].split('\n') })
-  }
-  if (!blocks.length) return null
-  const rooms = [...new Set(blocks.map(b => `#${b.room}`))].join(', ')
-  const who = [...from].slice(0, 2).join(', ') + (from.size > 2 ? ` +${from.size - 2}` : '')
-  const label = decision
-    ? `💬 You ${decision} a request · ${rooms}`
-    : `💬 Received ${n} message${n === 1 ? '' : 's'} · ${rooms}${who ? ` · ${who}` : ''}`
-  return { key: `${last}:${n}:${blocks.length}`, label: plain(label), blocks }
+// Display only (the model's text is untouched): markdown where the surface has it.
+function mdBody(ui: any, text: string, dim?: boolean) {
+  const t = plain(text).replace(/\t/g, '  ') || ' '
+  return ui.Markdown ? <ui.Markdown text={t} dimColor={dim} /> : <ui.Text dimColor={dim} wrap="wrap">{t}</ui.Text>
+}
+function drawMsg(ui: any, m: RoomMsg, key: string, dim?: boolean) {
+  const { Box, Text } = ui
+  if (m.system) return <Box key={key} marginTop={1}><Text dimColor wrap="wrap">· {plain(m.text)}</Text></Box>
+  return (
+    <Box key={key} flexDirection="column" marginTop={1}>
+      <Text bold={!dim} dimColor={dim}>{plain(m.sender) || 'Someone'}</Text>
+      {m.replyTo ? <Text dimColor wrap="wrap">↪ replying to {plain(m.replyTo)}</Text> : null}
+      {mdBody(ui, m.text, dim)}
+    </Box>
+  )
+}
+function drawBlock(ui: any, b: RoomBlock, named: boolean, key: string) {
+  const { Box, Text } = ui
+  return (
+    <Box key={key} flexDirection="column" marginTop={named ? 1 : 0}>
+      {named ? <Text bold>#{plain(b.room)}</Text> : null}
+      {b.about ? <Box flexDirection="column"><Text dimColor>About #{plain(b.room)} (its description, written by its members)</Text>{mdBody(ui, b.about, true)}</Box> : null}
+      {b.notes.map((n, i) => <Text key={`n${i}`} dimColor wrap="wrap">{plain(n)}</Text>)}
+      {b.earlier.length ? <Box flexDirection="column"><Text dimColor>Earlier in #{plain(b.room)}</Text>{b.earlier.map((m, i) => drawMsg(ui, m, `e${i}`, true))}</Box> : null}
+      {b.earlier.length && b.messages.length ? <Box marginTop={1}><Text dimColor>New</Text></Box> : null}
+      {b.messages.map((m, i) => drawMsg(ui, m, `m${i}`))}
+    </Box>
+  )
 }
 
 // ---------------------------------------------------------------- commands
@@ -1585,33 +1593,53 @@ export const register: Register = on => {
   })
 
   // Room messages delivered to the model draw as one line, every time;
-  // pressing it opens them.
+  // pressing it opens them, laid out as a chat: each message under its
+  // sender, its markdown drawn. The model reads the delivery as sent.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const p = e.props as any
     if (p.origin?.kind !== 'plugin' || !String(p.text ?? '').includes('<agent-chat room_id=')) return next(e)
-    // Always folded: the engine marks a short row "expanded" too (it fits its
-    // speaker label), so isExpanded can't tell ctrl+o from a short message.
-    // Pressing the line opens it, on every surface and in ctrl+o alike.
     let d: Delivery | null = null
     try { d = parseDelivery(String(p.text)) } catch { d = null }
     if (!d) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e) as any
+    const { Box, Text, Button } = ui
     const isOpen = (await read($, opened)).includes(d.key)
     const key = d.key
     const toggle = () => { void update($, opened, o => o.includes(key) ? o.filter(k => k !== key) : [...o, key].slice(-50)) }
     return (
       <Box flexDirection="column">
-        <Button key={`rx-${key}`} onPress={toggle}><Text dimColor>{d.label} {isOpen ? '⌄' : '›'}</Text></Button>
-        {isOpen ? (
-          <Box flexDirection="column" paddingLeft={2}>
-            {d.blocks.map((b, i) => (
-              <Box key={`b${i}`} flexDirection="column" marginTop={i ? 1 : 0}>
-                {d!.blocks.length > 1 ? <Text bold>#{plain(b.room)}</Text> : null}
-                {b.lines.map((l, j) => <Text key={`l${j}`} dimColor={/^\[.*\]$|^---$/.test(l)} wrap="wrap">{plain(l) || ' '}</Text>)}
-              </Box>
-            ))}
-          </Box>
-        ) : null}
+        <Button key={`rx-${key}`} onPress={toggle}><Text dimColor>{plain(d.label)} {isOpen ? '⌄' : '›'}</Text></Button>
+        {isOpen ? <Box flexDirection="column" paddingLeft={2}>{d.blocks.map((b, i) => drawBlock(ui, b, d!.blocks.length > 1, `b${i}`))}</Box> : null}
+      </Box>
+    )
+  })
+
+  // This agent's own room actions draw as one line too: a post opens to its
+  // text, drawn as the room shows it.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const p = e.props as any
+    const name = String(p.tool ?? '')
+    if (!name.startsWith(`mcp__${NAME}__`)) return next(e)
+    const t = name.slice(`mcp__${NAME}__`.length)
+    if (!['reply', 'react', 'read_history'].includes(t) || p.isErrored || p.isInterrupted) return next(e)
+    const input = (p.input ?? {}) as any
+    const s = await read($, chat)
+    const room = plain(`#${s.roomNames[String(input.room_id ?? '')] ?? input.room_id ?? 'room'}`)
+    const ui = $.ui.resolve(e) as any
+    const { Box, Text, Button } = ui
+    if (t === 'react') return <Text dimColor>{input.emoji ? `${plain(input.emoji)} Reacted in ${room}` : `Took a reaction off in ${room}`}</Text>
+    if (t === 'read_history') return <Text dimColor>📜 Read {room}{input.limit ? ` (last ${Number(input.limit) || ''})` : ''}{input.before ? ', older messages' : ''}</Text>
+    const text = String(input.text ?? '')
+    const key = `tu-${p.tool_use_id}`
+    const isOpen = (await read($, opened)).includes(key)
+    const toggle = () => { void update($, opened, o => o.includes(key) ? o.filter(k => k !== key) : [...o, key].slice(-50)) }
+    const first = plain(text.split('\n').find(l => l.trim()) ?? '').replace(/[*_`#>]/g, '').trim()
+    return (
+      <Box flexDirection="column">
+        <Button key={key} onPress={toggle}><Text dimColor>💬 {p.isRunning ? 'Posting' : 'Posted'} in {room}{input.reply_to ? ' (a reply)' : ''} {isOpen ? '⌄' : '›'}</Text></Button>
+        {isOpen
+          ? <Box flexDirection="column" paddingLeft={2}>{mdBody(ui, text)}</Box>
+          : <Box paddingLeft={2}><Text dimColor wrap="truncate-end">{first.length > 120 ? `${first.slice(0, 119)}…` : first}</Text></Box>}
       </Box>
     )
   })

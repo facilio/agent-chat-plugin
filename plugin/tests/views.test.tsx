@@ -72,9 +72,9 @@ test('/agent-chat review holds every reply, the owner\'s own turn too', async ($
 // ------------------------------------------------------------- transcript rows
 const DELIVERY = `[Agent Chat message — not typed by your user. …]
 
-<agent-chat room_id="rm_1" room="general" from="Bob" from_kind="user" from_is_owner="false" addressed="true" message_id="0mabc" count="2">
-Alice: can you look?
-Bob: @alice-ai can we ship at 5?
+<agent-chat room_id="rm_1" room="general" from="Bob (@bob)" from_kind="user" from_is_owner="false" addressed="true" message_id="0mabc" count="2">
+Alice (@alice): can you look?
+Bob (@bob): @alice-ai can we ship at 5?
 </agent-chat>`
 const ROW = (surface: 'terminal' | 'mobile' | 'desktop', text = DELIVERY, isExpanded = false) => ({
   plugin: 'agent-chat', surface, component: 'UserMessage', requestId: `row-${surface}`,
@@ -87,11 +87,15 @@ test('room messages draw as one line; pressing it shows them, on every surface',
     const ui = await $.ui.mount(ROW(surface))
     const line = await ui.find({ type: 'Text', text: /Received 2 messages · #general · Bob/ })
     expect(line).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /ship at 5/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Markdown', text: /ship at 5/ })).toBeUndefined()
     await ui.press({ key: 'rx-0mabc:2:1' })
-    expect(await ui.find({ type: 'Text', text: /ship at 5/ })).toBeDefined()
+    // open: each message under its sender, its text drawn as markdown
+    expect(await ui.find({ type: 'Text', text: /^Bob$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Alice$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: /@alice-ai can we ship at 5\?/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /<agent-chat/ })).toBeUndefined()
     await ui.press({ key: 'rx-0mabc:2:1' })   // and closes again
-    expect(await ui.find({ type: 'Text', text: /ship at 5/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Markdown', text: /ship at 5/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -179,4 +183,25 @@ test('a bare /agent-chat pane closes the pane when it is open', async ($, on) =>
   const r: any = await $.command.run({ command: 'agent-chat', args: 'pane' } as any)
   expect(String(r.text)).toMatch(/Pane closed/)
   expect(closed).toContain('agent-chat')
+})
+
+test("the agent's own post draws as one line and opens to its text; reactions and history reads are one line", async ($, on) => {
+  const TOOL = (tool: string, input: Record<string, unknown>) => ({
+    plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: `tu-${tool}`,
+    props: { tool_use_id: `toolu_${tool}`, tool: `mcp__agent-chat__${tool}`, input, isRunning: false, isErrored: false, isInterrupted: false },
+  }) as any
+  const text = '**What shipped today**\n\n- Replies\n- Reactions'
+  let ui = await $.ui.mount(TOOL('reply', { room_id: 'rm_1', text }))
+  expect(await ui.find({ type: 'Text', text: /Posted in #rm_1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^What shipped today$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  await ui.press({ key: 'tu-toolu_reply' })
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe(text)
+  await ui.unmount()
+  ui = await $.ui.mount(TOOL('react', { room_id: 'rm_1', message_id: 'm1', emoji: '👍' }))
+  expect(await ui.find({ type: 'Text', text: /👍 Reacted in #rm_1/ })).toBeDefined()
+  await ui.unmount()
+  ui = await $.ui.mount(TOOL('read_history', { room_id: 'rm_1', limit: 20 }))
+  expect(await ui.find({ type: 'Text', text: /📜 Read #rm_1 \(last 20\)/ })).toBeDefined()
+  await ui.unmount()
 })
