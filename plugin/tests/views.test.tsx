@@ -96,11 +96,11 @@ test('room messages draw as one line; pressing it shows them, on every surface',
   }
 })
 
-test("ctrl+o (the terminal's full view) and anyone else's prompt keep the engine's drawing", async ($, on) => {
-  engine(on)
+test("short deliveries fold too (the engine marks them expanded); anyone else's prompt keeps the engine's drawing", async ($, on) => {
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
-  let ui = await $.ui.mount(ROW('terminal', DELIVERY, true))
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  const short = '<agent-chat room_id="rm_1" room="general" from="Bob" message_id="0mxyz" count="1">\nok\n</agent-chat>'
+  let ui = await $.ui.mount(ROW('terminal', short, true))
+  expect(await ui.find({ type: 'Text', text: /Received 1 message · #general · Bob/ })).toBeDefined()
   await ui.unmount()
   ui = await $.ui.mount({ ...ROW('terminal'), props: { text: 'hello', origin: { kind: 'composer' }, isExpanded: false } })
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')

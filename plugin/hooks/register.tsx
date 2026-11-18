@@ -1584,12 +1584,14 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Room messages delivered to the model draw as one line; pressing it opens
-  // them. ctrl+o (the full transcript) shows the raw delivery.
+  // Room messages delivered to the model draw as one line, every time;
+  // pressing it opens them.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const p = e.props as any
     if (p.origin?.kind !== 'plugin' || !String(p.text ?? '').includes('<agent-chat room_id=')) return next(e)
-    if (e.surface === 'terminal' && p.isExpanded) return next(e)
+    // Always folded: the engine marks a short row "expanded" too (it fits its
+    // speaker label), so isExpanded can't tell ctrl+o from a short message.
+    // Pressing the line opens it, on every surface and in ctrl+o alike.
     let d: Delivery | null = null
     try { d = parseDelivery(String(p.text)) } catch { d = null }
     if (!d) return next(e)
