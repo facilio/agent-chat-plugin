@@ -152,3 +152,18 @@ test('a held tool call shows as a card after the chat; the room text has no cont
   expect(await ui.find({ type: 'Button', key: 'allow' })).toBeDefined()
   await ui.unmount()
 })
+
+test('/agent-chat pane close unpins the view and closes it; pane test needs a connection', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, pinned: true } })
+  const closed: string[] = []
+  on('ui.close', (_: any, e: any) => { closed.push(e.id); return { value: undefined } })
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'pane close' } as any)
+  expect(String(r.text)).toMatch(/Pane closed/)
+  expect(st.get('view').pinned).toBe(false)
+  expect(closed).toContain('agent-chat')
+  const t: any = await $.command.run({ command: 'agent-chat', args: 'pane test' } as any)
+  expect(String(t.text)).toMatch(/isn't connected/)
+})

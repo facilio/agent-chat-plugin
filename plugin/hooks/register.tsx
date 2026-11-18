@@ -1021,6 +1021,8 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat connect            link this computer again (new link)
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
   /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
+  /agent-chat pane close         close it (it opens again only when something needs your OK)
+  /agent-chat pane test          a test approval in the pane and on the web; nothing is posted
   /agent-chat hold [on]          who you allowed for this session; on = ask again for everyone
   /agent-chat review <on|off> [room|all]  every reply there waits for your OK (looks-private replies always do)
   /agent-chat update             fetch the newest Agent Chat (works over Remote Control), then /reload-plugins
@@ -1229,6 +1231,28 @@ async function command($: $, args: string): Promise<string> {
         await $.store.set('paneOff', false)
         return 'Pane on. When a room message leads to a tool call that needs your approval, it goes to the web and to a pane here; the first answer wins.'
       }
+      if (arg === 'close') {
+        await update($, view, v => v ? { ...v, pinned: false } : v)
+        if (await read($, approval)) return 'Something is waiting for your answer, so the pane stays until you answer it (or on your Agent Chat tab).'
+        await $.ui.close({ id: PANE }).catch(() => {})
+        return 'Pane closed. It opens again by itself only when something needs your OK.'
+      }
+      if (arg === 'test') {
+        const s = await read($, chat)
+        if (!s.joined.length) return 'Not in a room. /agent-chat join <room> first: the test card shows that room.'
+        if (!bridge || lastStatus?.state !== 'online') return "Agent Chat isn't connected, so there's nowhere to send the card."
+        if (await read($, approval)) return 'An approval is already waiting. Answer it first.'
+        const roomId = (await read($, view))?.roomId ?? s.joined[0]
+        const text = 'This is a test approval from /agent-chat pane test. Nothing is posted, whatever you choose.'
+        void holdForOwner($, { tool: 'agent-chat test' }, {}, {
+          roomId, post: text,
+          description: `Post in #${s.roomNames[roomId] ?? roomId}: "${text}" (held because this is a test: nothing is posted)`,
+          preview: text, webOnlyOk: true,
+          onTerminal: { decision: 'deny', reason: 'normal prompt' }, onTimeout: { decision: 'deny', reason: 'no answer in 10 minutes' }, onDeny: { decision: 'deny', reason: "Don't post" },
+        }).then(v => $.ui.log(`Agent Chat test approval: you chose ${v.decision === 'allow' ? '"Post it"' : `"${v.reason}"`}. Nothing was posted.`))
+          .catch(err => $.ui.log(`Agent Chat test approval failed: ${(err as Error).message}`))
+        return 'A test approval is on its way: the pane here and a card on your Agent Chat tab. Answer either one; nothing is posted.'
+      }
       if (arg === 'view' || arg.startsWith('view ')) {
         const s = await read($, chat)
         if (!s.joined.length) return 'Not in a room. /agent-chat join <room>'
@@ -1241,7 +1265,7 @@ async function command($: $, args: string): Promise<string> {
         void paneToEnd($)
         return `Showing #${s.roomNames[roomId] ?? roomId} in the pane. Close it with Esc or ctrl+x x.`
       }
-      return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane on|off|view [room])`
+      return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane on|off|view [room]|close|test)`
     }
     default:
       return HELP
