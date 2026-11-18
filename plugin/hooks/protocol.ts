@@ -38,6 +38,18 @@ export interface ChatMessage {
   attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
   notice?: 'paused' | 'resumed';  // system lines about the agent pause: the quiet record of when it happened
   reactions?: Reaction[];  // oldest first; at most one per person or agent
+  replyTo?: ReplyRef;      // the message this one answers (a snapshot: it stays if that one changes)
+}
+
+// What a reply shows of the message it answers, WhatsApp-style: who wrote it
+// and its opening words (or its files). Replying to an agent's message is
+// talking to that agent (session): see isAddressed.
+export interface ReplyRef { id: string; authorKind: AuthorKind; authorId: string; authorName: string; session?: string; text: string }
+export const REPLY_SNIPPET = 200;
+export function replySnippet(m: { text?: string; attachments?: Array<{ name: string }> }): string {
+  const t = String(m.text ?? '').replace(/```[\s\S]*?```/g, '[code]').replace(/\s+/g, ' ').trim();
+  const s = t || (m.attachments ?? []).map((f) => `📎 ${f.name}`).join(' ');
+  return s.length > REPLY_SNIPPET ? `${s.slice(0, REPLY_SNIPPET - 1)}…` : s;
 }
 
 // An emoji on a message. WhatsApp-style: one each, a new one replaces yours,
@@ -315,7 +327,9 @@ export interface AddressCtx {
 //   - "@handle:part" addresses only the session(s) whose label matches;
 //   - a plain "@handle" addresses the agent's primary (newest) session there;
 //   - a human message that mentions nobody in the room is for every agent;
-//     one that mentions only people (@priya) is for those people, not agents.
+//     one that mentions only people (@priya) is for those people, not agents;
+//   - a reply is for whoever wrote the message it answers (an agent's
+//     session, or a person: then no agent), unless it @mentions agents.
 // Reserved (no agent can take the name): the whole room, people and agents.
 export const EVERYONE = 'everyone';
 
@@ -328,12 +342,18 @@ export function isAddressed(msg: ChatMessage, agentName: string | null, ctx: Add
   if (mine.length) {
     return mine.some((m) => m.includes(':') ? sessionMatches(partOf(m), c.session) : c.primary !== false);
   }
+  // A reply to an agent's message is for that agent: the session that wrote
+  // it (its primary one when that isn't recorded), and not for every agent.
+  const rt = msg.replyTo;
+  const replyAgent = rt?.authorKind === 'agent' && c.agentNames.includes(rt.authorName) ? rt.authorName : null;
+  if (replyAgent === agentName && !forAgents.length) return rt!.session ? rt!.session === c.session : c.primary !== false;
   // @everyone from a person addresses every agent (its newest session) and
   // every person. From an agent it addresses no agent: that would wake them all.
   if (mentions.includes(EVERYONE)) return msg.authorKind === 'user' && c.primary !== false;
-  if (msg.authorKind !== 'user' || forAgents.length) return false;
+  if (msg.authorKind !== 'user' || forAgents.length || replyAgent) return false;
+  // a reply to a person's message is talking to them, as an @mention would be
   const forPeople = mentions.filter((m) => (c.userHandles ?? []).includes(m));
-  return forPeople.length === 0 && c.primary !== false;
+  return forPeople.length === 0 && rt?.authorKind !== 'user' && c.primary !== false;
 }
 
 // Who gets woken (i.e. gets an event that makes Claude take a turn).
@@ -367,7 +387,7 @@ export type ClientFrame =
   | { action: 'join'; reqId?: string; room: string }          // room id, or a room name the owner is in
   | { action: 'leave'; reqId?: string; roomId?: string; reason?: 'exit' } // omit roomId: leave every room; exit = Claude Code is ending the session
   | { action: 'session'; reqId?: string; label?: string; summary?: string | null; title?: string | null }
-  | { action: 'send'; reqId?: string; roomId: string; text: string }
+  | { action: 'send'; reqId?: string; roomId: string; text: string; replyTo?: string }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }
   // This agent's reaction on a message in a room this session joined; null takes it off.

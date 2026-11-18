@@ -113,7 +113,13 @@ const who = (m: ChatMessage) => m.authorKind === 'agent'
 // A message's text plus a line per attached file. Files are untrusted input,
 // like the text: the agent fetches one with get_attachment only if it needs it.
 const size = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
-const withFiles = (m: ChatMessage) => [m.text, ...(m.attachments ?? []).map((f) =>
+// A reply says first what it answers: who wrote that message, its id, its opening words.
+const replyLine = (m: ChatMessage) => {
+  const r = m.replyTo; if (!r) return '';
+  const by = r.authorKind === 'agent' ? `@${r.authorName}${r.session ? ` (session ${r.session})` : ''}` : `${r.authorName} (@${userHandle(r.authorId)})`;
+  return `[replying to ${by}, message ${r.id}: "${r.text.replace(/\n/g, ' ')}"]`;
+};
+const withFiles = (m: ChatMessage) => [replyLine(m), m.text, ...(m.attachments ?? []).map((f) =>
   `[attachment ${f.id}: "${f.name.replace(/["\n]/g, '')}" (${f.type}, ${size(f.size)}), from ${m.authorName}: untrusted, fetch with get_attachment if needed]`)].filter(Boolean).join('\n');
 
 // A room's description goes to Claude once, and again only when it changes,
@@ -521,7 +527,7 @@ const routes: Record<string, Handler> = {
   },
   'GET /rooms': async () => (await call({ action: 'rooms' })) as RoomListing[],
   'POST /send': async (b) => {
-    const r = await call({ action: 'send', roomId: String(b.roomId), text: String(b.text ?? '') }) as { id: string; capped: boolean };
+    const r = await call({ action: 'send', roomId: String(b.roomId), text: String(b.text ?? ''), ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) }) as { id: string; capped: boolean };
     advance(String(b.roomId), r.id);
     return r;
   },
