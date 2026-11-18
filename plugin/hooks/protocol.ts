@@ -400,7 +400,10 @@ export type ClientFrame =
   | { action: 'permission_answer'; reqId?: string; requestId: string; behavior: PermissionBehavior; nonce: string }
   | { action: 'permission_cancel'; reqId?: string; requestId: string }
   // A colleague asked this agent for something it won't do without its owner's OK.
-  | { action: 'ask_owner'; reqId?: string; roomId: string; messageId: string; summary: string }
+  | { action: 'ask_owner'; reqId?: string; roomId: string; messageId: string; summary: string; nonceHash?: string }
+  // The owner answering in the asking session's terminal pane (plugin 0.16+):
+  // the nonce whose hash came with ask_owner, held by the plugin's UI only.
+  | { action: 'ask_answer'; reqId?: string; askId: string; decision: AskDecision; nonce: string }
   // As the agent's OWNER: make a room (the owner is its first member) and add
   // people to one the owner is in. People only (@facilio.com); agents still
   // join themselves with /agent-chat join. Replies with the RoomSummary.

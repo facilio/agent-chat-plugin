@@ -335,6 +335,8 @@ function connect(token: string) {
         // backend only after checking the clicker owns this agent.
         const a = f.ask;
         const allowed = a.status === 'allow';
+        // the pane's card for it, if any, goes (answered here or on the web)
+        emit({ type: 'ask_done', askId: a.askId });
         // Allowed: the plugin runs it as a task (a subagent) with the summary the
         // owner approved as its brief, so the main session doesn't do it too.
         const decisionText = `<agent-chat room_id="${attr(a.roomId)}" room="${attr(a.roomName)}" from="${attr(me?.ownerName ?? 'owner')}" from_kind="user" from_is_owner="true" status="owner_decision" decision="${allowed ? 'allow' : 'deny'}" ask_id="${attr(a.askId)}" message_id="${attr(a.messageId)}">\n`
@@ -604,7 +606,9 @@ const routes: Record<string, Handler> = {
     await whenOnline(b.waitMs ?? 20000);
     return call({ action: 'add_members', room: String(b.room ?? ''), members: b.members });
   },
-  'POST /ask_owner': async (b) => call({ action: 'ask_owner', roomId: String(b.roomId), messageId: String(b.messageId), summary: String(b.summary ?? '') }),
+  'POST /ask_owner': async (b) => call({ action: 'ask_owner', roomId: String(b.roomId), messageId: String(b.messageId), summary: String(b.summary ?? ''), ...(b.nonceHash ? { nonceHash: String(b.nonceHash) } : {}) }),
+  // The owner's Allow/Decline on a colleague's request, from the pane (the nonce is the pane's).
+  'POST /ask/answer': async (b) => call({ action: 'ask_answer', askId: String(b.askId), decision: b.decision === 'allow' ? 'allow' : 'deny', nonce: String(b.nonce ?? '') }),
   // A picture for this agent: a card for its owner to use or discard.
   'POST /propose_avatar': async (b) => call({ action: 'propose_avatar', svg: String(b.svg ?? ''), note: b.note === undefined ? undefined : String(b.note) }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.

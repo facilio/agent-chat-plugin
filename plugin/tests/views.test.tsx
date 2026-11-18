@@ -163,3 +163,39 @@ test("the agent's own post draws as one line and opens to its text; reactions an
   expect(await ui.find({ type: 'Text', text: /📜 Read #rm_1 \(last 20\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+// ------------------------------------------------- a colleague's request (ask_owner)
+const ASK = (o: Record<string, unknown> = {}) => ({
+  askId: 'ak_abcdefghijkl', roomId: 'rm_1', roomName: 'general', requesterName: 'Bob', requestText: 'can your agent rerun the AE-2 report?',
+  summary: 'Rerun the AE-2 report and post the numbers', expiresAt: Date.now() + 3600_000, ...o,
+})
+
+test("a colleague's request shows in the pane: their words from the server, the agent's summary, and where to answer", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', VIEW)
+  // after a module reload the pane has no key for it: no buttons, the web answers
+  st.seed('asks', { shape: 'asks-1', value: [ASK(), ASK({ askId: 'ak_old', expiresAt: Date.now() - 1000, requesterName: 'Gone' })] })
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /Bob asks your agent/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /rerun the AE-2 report\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Your agent would: Rerun the AE-2 report/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Answer it on your Agent Chat tab/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Gone/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'ask-allow-ak_abcdefghijkl' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /approval needed/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a request waiting alongside a held tool call: both show, the tool call first', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', VIEW)
+  st.seed('asks', { shape: 'asks-1', value: [ASK({ roomId: 'rm_2', roomName: 'ops' })] })
+  st.seed('approval', { shape: 'approval-1', value: { requestId: 'abcde', tool: 'Bash', description: 'Run: ls (a room message started this turn)', preview: '{}', roomId: 'rm_1' } })
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /Bash: Run: ls/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'allow' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Bob · #ops asks your agent/ })).toBeDefined()
+  await ui.unmount()
+})

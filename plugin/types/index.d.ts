@@ -53,9 +53,12 @@ export type Approval = { requestId: string; tool: string; description: string; p
 // The room the pane shows as a chat (display only: never reaches the model).
 export type PaneMsg = { id: string; who: string; mine: boolean; system?: boolean; text: string; ts: number; reactions?: string };
 export type PaneView = { roomId: string; roomName: string; messages: PaneMsg[]; pinned?: boolean };
+// A colleague's request waiting for the owner (ask_owner), as the pane shows it:
+// who asked and what they wrote come from the server, the summary is the agent's.
+export type PaneAsk = { askId: string; roomId: string; roomName: string; requesterName: string; requestText: string; summary: string; expiresAt: number };
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null>; view: Shaped<PaneView | null>; opened: Shaped<string[]> }
+    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null>; view: Shaped<PaneView | null>; opened: Shaped<string[]>; asks: Shaped<PaneAsk[]> }
   }
 }

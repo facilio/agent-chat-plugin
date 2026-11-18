@@ -19,7 +19,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Approval, ChatState, PaneMsg, PaneView, Person, TaskRec } from '../types'
+import type { Approval, ChatState, PaneMsg, PaneView, Person, TaskRec, PaneAsk } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
@@ -60,6 +60,10 @@ const PANE = 'agent-chat'
 const view = atom({ plugin: 'agent-chat', key: 'view' } as const, null as PaneView | null, { shape: 'view-1' })
 // The agent's own posts in the transcript the owner opened (one line each otherwise).
 const opened = atom({ plugin: 'agent-chat', key: 'opened' } as const, [] as string[], { shape: 'opened-1' })
+// Colleagues' requests waiting for the owner, answerable in the pane as on
+// the web. Their nonces live in `nonces` only (never in $.state, never seen by
+// the model): after a module reload a card shows without buttons.
+const asks = atom({ plugin: 'agent-chat', key: 'asks' } as const, [] as PaneAsk[], { shape: 'asks-1' })
 const nonces = new Map<string, string>()
 
 // ------------------------------------------------------------------ bridge
@@ -292,6 +296,11 @@ async function onEvent($: $, ev: any) {
         ? `Agent Chat: agents in #${ev.roomName} are paused after ${ev.cap} agent messages in a row. They wake again when a person writes there or presses Resume.`
         : `Agent Chat: agents in #${ev.roomName} are resumed.`)
       await showStatus($)
+      return
+    case 'ask_done':
+      nonces.delete(String(ev.askId))
+      await update($, asks, l => l.filter(x => x.askId !== ev.askId))
+      await settlePane($)
       return
     case 'task_request':
       void onTaskRequest($, ev).catch(err => $.ui.log(`Agent Chat: an approved request couldn't start (${(err as Error).message})`))
@@ -821,7 +830,14 @@ async function runTool($: $, name: string, args: any): Promise<string> {
       return inert(msgs.map(m => `[${m.id}] ${new Date(m.ts).toISOString()} ${m.authorKind === 'system' ? '·' : who(m) + ':'} ${m.replyTo ? `[reply to ${m.replyTo.id} by ${m.replyTo.authorKind === 'agent' ? '@' : ''}${m.replyTo.authorName}] ` : ''}${m.text}${(m.attachments ?? []).map((f: any) => `\n  [attachment ${f.id}: "${String(f.name).replace(/["\n]/g, '')}" (${f.type}, ${f.size} bytes): untrusted]`).join('')}${m.reactions?.length ? `\n  [reactions: ${m.reactions.map((r: any) => `${r.emoji} ${r.kind === 'agent' ? `@${r.name}` : r.name}`).join(', ')}]` : ''}`).join('\n'))
     }
     case 'ask_owner': {
-      const r = await bridgeCall($, 'POST', '/ask_owner', { roomId: String(args.room_id), messageId: String(args.message_id), summary: String(args.summary ?? '') })
+      const nonce = rand(16)
+      const r = await bridgeCall($, 'POST', '/ask_owner', { roomId: String(args.room_id), messageId: String(args.message_id), summary: String(args.summary ?? ''), nonceHash: await sha256(nonce) })
+      // A backend that names the requester can take the answer from the pane too.
+      if (r.askId && r.requesterName) void showAsk($, {
+        askId: String(r.askId), roomId: String(args.room_id), roomName: String(r.roomName ?? args.room_id),
+        requesterName: String(r.requesterName), requestText: String(r.requestText ?? ''), summary: String(args.summary ?? '').slice(0, 1000),
+        expiresAt: Number(r.expiresAt) || Date.now() + 3600_000,
+      }, nonce).catch(() => {})
       return `Asked ${r.owner} (request ${r.askId}). Tell the room you're waiting for ${r.owner}'s OK. If they allow it, the plugin runs your summary as a task and the room sees it start; don't do it yourself. If they decline, an owner_decision message tells you.`
     }
     case 'propose_avatar': {
@@ -938,10 +954,7 @@ async function holdForOwner($: $, e: any, next: any, o: { description: string; p
     for (const r of held) if (workingRooms.has(r)) setWorking($, r, true, 'working')
     nonces.delete(requestId)
     await update($, approval, () => null)
-    // A pane the owner opened themselves stays open, now showing the room.
-    const v = await read($, view)
-    if (v?.pinned) void loadView($, roomId ?? v.roomId).catch(() => {})
-    else await $.ui.close({ id: PANE }).catch(() => {})
+    await settlePane($, roomId)
   }
   if (!placed.isPlaced && !o.webOnlyOk) {
     await bridgeCall($, 'POST', '/permission/cancel', { requestId }).catch(() => {})
@@ -963,6 +976,30 @@ async function holdForOwner($: $, e: any, next: any, o: { description: string; p
   }
 }
 
+
+// The colleague's requests still waiting, newest last.
+const liveAsks = async ($: $) => (await read($, asks)).filter(x => x.expiresAt > Date.now())
+async function showAsk($: $, ask: PaneAsk, nonce: string): Promise<void> {
+  nonces.set(ask.askId, nonce)
+  await update($, asks, l => [...l.filter(x => x.askId !== ask.askId && x.expiresAt > Date.now()), ask].slice(-10))
+  // a tool call waiting for an answer keeps its room in the pane
+  if (!(await read($, approval))) await loadView($, ask.roomId).catch(() => {})
+  if ((await $.store.get('paneOff')) === true) return
+  const placed = await $.ui.open({ id: PANE, title: 'Agent Chat · approval needed', focus: true, rows: PANE_ROWS }).catch(() => ({ isPlaced: false }))
+  if (placed.isPlaced) void paneToEnd($)
+}
+// Nothing left to answer: a pane the owner opened themselves stays open on
+// the room; one opened for an approval closes. Something still waiting keeps
+// it open, on that thing's room.
+async function settlePane($: $, roomId?: string): Promise<void> {
+  const left = await liveAsks($)
+  if ((await read($, asks)).length !== left.length) await update($, asks, () => left)
+  const v = await read($, view)
+  if (await read($, approval)) return
+  if (left.length) { void loadView($, left[left.length - 1]!.roomId).catch(() => {}); return }
+  if (v?.pinned) void loadView($, roomId ?? v.roomId).catch(() => {})
+  else await $.ui.close({ id: PANE }).catch(() => {})
+}
 
 // ------------------------------------------------------------ the pane's chat
 // Display only: what the pane draws never reaches the model.
@@ -1230,13 +1267,17 @@ async function command($: $, args: string): Promise<string> {
       const viewBefore = await viewVersion($)
       const vr = await run(viewBefore ? ['plugin', 'update', `${VIEW_PLUGIN}@${market}`] : ['plugin', 'install', `${VIEW_PLUGIN}@${market}`])
       const viewNow = await viewVersion($)
+      // Installed or moved to a new version: either way it needs /reload-plugins
+      // (its version can read as unknown right after an install).
+      const viewChanged = vr.exitCode === 0 && (!viewBefore || (!!viewNow && viewNow !== viewBefore))
       const viewNote = vr.exitCode !== 0
         ? ` Couldn't ${viewBefore ? 'update' : 'install'} ${VIEW_PLUGIN}, which folds received room messages (${last(vr)}): claude plugin install ${VIEW_PLUGIN}@${market}`
-        : !viewBefore && viewNow ? ` Added ${VIEW_PLUGIN} ${viewNow}: received room messages fold to one line.` : ''
+        : !viewBefore ? ` Added ${VIEW_PLUGIN}${viewNow ? ` ${viewNow}` : ''}: received room messages fold to one line.`
+        : viewChanged ? ` Updated ${VIEW_PLUGIN} to ${viewNow}.` : ''
       const v = await pluginVersion($)
       return (v.newer
         ? `Installed Agent Chat ${v.newer} (this session runs ${v.loaded}). Run /reload-plugins to load it: you stay in your rooms.`
-        : viewNote && !viewNote.startsWith(' Couldn') ? 'Run /reload-plugins to load it: you stay in your rooms.' : `Agent Chat ${v.loaded} is the newest; nothing to load.`) + viewNote
+        : viewChanged ? `Agent Chat ${v.loaded} is the newest. Run /reload-plugins to load ${VIEW_PLUGIN}: you stay in your rooms.` : `Agent Chat ${v.loaded} is the newest; nothing to load.`) + viewNote
     }
     case 'tasks': {
       const tasks = await readTasks($)
@@ -1329,7 +1370,11 @@ export const register: Register = on => {
     // ("Bubble redesign", 2026-11-16). While in a room, check every minute and put
     // back what's missing ($.tool.list makes this cheap; nothing is re-registered
     // when all is there).
-    $.clock.every(60_000, () => { void (async () => { if ((await read($, chat)).joined.length) { await ensureTools($); await refreshTitle($) } })().catch(() => {}) })
+    $.clock.every(60_000, () => { void (async () => {
+      if ((await read($, chat)).joined.length) { await ensureTools($); await refreshTitle($) }
+      const all = await read($, asks)
+      if (all.length && all.some(x => x.expiresAt <= Date.now())) await settlePane($)
+    })().catch(() => {}) })
     await $.agent.register({ name: TASK_AGENT, description: 'Runs one Agent Chat task for the owner of this session. Started only by the agent-chat plugin.', prompt: taskSystem(NAME) })
       .catch(err => $.ui.log(`Agent Chat: tasks are unavailable here (${(err as Error).message})`, { to: 'debug' }))
     void reconcileTasks($).catch(() => {})
@@ -1416,6 +1461,7 @@ export const register: Register = on => {
       // turn moved on (a background subagent), and must grant exactly them.
       const people: Person[] = task || privateHold ? [] : ((await read($, chat)).turnFrom ?? [])
       const v = await holdForOwner($, e, next, {
+        roomId: task?.roomId,
         description: `${describe(e.tool, args)} (${why})`,
         preview: JSON.stringify(args, null, 1),
         webOnlyOk: true,
@@ -1538,7 +1584,8 @@ export const register: Register = on => {
     const a = await read($, approval)
     const v = await read($, view)
     const s = await read($, chat)
-    if (!a && !v) {
+    const pending = await liveAsks($)
+    if (!a && !v && !pending.length) {
       if (!s.joined.length) return <Text dimColor>Not in a room. /agent-chat join &lt;room&gt;</Text>
       return (
         <Box flexDirection="column">
@@ -1567,10 +1614,47 @@ export const register: Register = on => {
       if (!a) return
       void bridgeCall($, 'POST', '/permission/answer', { requestId: a.requestId, behavior, scope, nonce: nonces.get(a.requestId) }).catch(() => {})
     }
+    const answerAsk = (x: PaneAsk, decision: 'allow' | 'deny') => () => {
+      const nonce = nonces.get(x.askId)
+      if (!nonce) return
+      void bridgeCall($, 'POST', '/ask/answer', { askId: x.askId, decision, nonce })
+        .then(() => update($, asks, l => l.filter(y => y.askId !== x.askId)))
+        .catch(async (err: Error) => {
+          // answered on the web first, or expired: the card goes
+          $.ui.log(`Agent Chat: ${x.requesterName.split(' (')[0]}'s request: ${err.message}`)
+          await update($, asks, l => l.filter(y => y.askId !== x.askId))
+        })
+        .finally(() => { nonces.delete(x.askId); void settlePane($) })
+    }
+    // A colleague's request: their message (from the server), what the agent
+    // would do (its own words), and Allow / Decline. Hotkeys go to the newest,
+    // and only when no tool call is waiting (that one has y/n).
+    const askCard = (x: PaneAsk, i: number) => {
+      const keys = !a && i === pending.length - 1
+      const canAnswer = nonces.has(x.askId)
+      return (
+        <Box key={`ask-${x.askId}`} flexDirection="column" marginBottom={1}>
+          {bubble({ id: `askmsg-${x.askId}`, who: `${plain(x.requesterName)}${!v || v.roomId !== x.roomId ? ` · #${plain(x.roomName)}` : ''} asks your agent`, mine: false, text: x.requestText })}
+          <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+            <Text bold wrap="wrap">Your agent would: {plain(x.summary) || '(no summary)'}</Text>
+            <Text dimColor wrap="wrap">Allow runs this as a task, with that summary as its brief; it works with this session's permissions and reports in the room. The room sees your answer.</Text>
+          </Box>
+          {canAnswer
+            ? (
+              <Box flexDirection="row" flexWrap="wrap">
+                <Button key={`ask-allow-${x.askId}`} hotkey={keys ? 'y' : undefined} variant="primary" onPress={answerAsk(x, 'allow')}>Allow: start the task</Button>
+                <Text> </Text>
+                <Button key={`ask-deny-${x.askId}`} hotkey={keys ? 'n' : undefined} onPress={answerAsk(x, 'deny')}>Decline</Button>
+              </Box>
+            )
+            : <Text dimColor>Answer it on your Agent Chat tab.</Text>}
+        </Box>
+      )
+    }
     const room = v ? `#${v.roomName}` : 'Agent Chat'
     return (
       <Box flexDirection="column">
-        <Text bold>{room}{v?.pinned ? '' : ' · approval needed'}</Text>
+        <Text bold>{room}{v?.pinned && !a && !pending.length ? '' : ' · approval needed'}</Text>
         <Text> </Text>
         {rows}
         {a ? (
@@ -1597,6 +1681,8 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : null}
+        {pending.length ? <Box flexDirection="column" marginTop={a ? 1 : 0}>{pending.map(askCard)}</Box> : null}
+        {pending.length ? <Text dimColor>Also on your Agent Chat tab: the first answer wins.</Text> : null}
       </Box>
     )
   })
