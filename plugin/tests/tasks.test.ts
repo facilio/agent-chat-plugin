@@ -164,6 +164,7 @@ test("a per-person grant lifts the tool hold only: reads outside the project and
 })
 
 test('/agent-chat status names the loaded plugin version, and a newer one installed beside it', async ($, on) => {
+  on('store.get', () => ({ value: undefined }))
   engine(on).seed(chatWith({ joined: [] }))
   on('fs.read', () => ({ value: '{"version":"0.11.2"}' }))
   on('fs.list', () => ({ value: [{ name: '0.11.1', kind: 'dir', size: 0 }, { name: '0.11.2', kind: 'dir', size: 0 }, { name: '0.12.0', kind: 'dir', size: 0 }] }))
@@ -183,6 +184,7 @@ test('/agent-chat update outside a marketplace install runs nothing and says so'
 })
 
 test("the session's Claude Code name (ListAgents, /rename) is read from its sessions file and shown in status", async ($, on) => {
+  on('store.get', () => ({ value: undefined }))
   const st = engine(on)
   st.seed(chatWith({ joined: [] }))
   const files: Record<string, string> = {
@@ -198,5 +200,7 @@ test("the session's Claude Code name (ListAgents, /rename) is read from its sess
   for (let i = 0; i < 20 && !(st.get() as any)?.value?.title; i++) await new Promise(r => setTimeout(r, 5))
   expect((st.get() as any)?.value?.title).toBe('chillout')
   const r: any = await $.command.run({ command: 'agent-chat', args: 'status' } as any)
-  expect(String(r.text)).toMatch(/This session: chillout\./)
+  expect(String(r.text)).toMatch(/This session: chillout \(only you see it\)\n/)
+  expect(String(r.text)).toMatch(/^state: not connected/)
+  expect(String(r.text).split("\n").length).toBeGreaterThan(4)
 })

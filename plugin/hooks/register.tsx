@@ -1098,7 +1098,22 @@ async function command($: $, args: string): Promise<string> {
     case 'rooms':
       return runTool($, 'list_rooms', {})
     case 'status': {
-      if (!bridge) { const t = (await read($, chat)).title; return `Not connected. /agent-chat join <room> to start.${t ? ` This session: ${t}.` : ''} ${versionLine(await pluginVersion($))}` }
+      if (!bridge) {
+        // Not in a room: no bridge runs, but the rest is known here.
+        const s = await read($, chat)
+        const review = await reviewRooms($)
+        return [
+          'state: not connected (this session is in no room). /agent-chat join <room> to start',
+          versionLine(await pluginVersion($)),
+          s.title ? `This session: ${s.title} (only you see it)` : null,
+          `session: ${s.pinnedLabel ? `${s.pinnedLabel} (set by hand)` : s.label ?? 'named when it joins (repo:branch:machine)'}`,
+          `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
+          `approvals: ${(await $.store.get('paneOff')) === true ? 'normal prompt only (pane off)' : 'web and pane, for requests a room message led to'}`,
+          review.length ? `review: every reply waits for you in ${review.includes('*') ? 'all rooms' : review.map(id => `#${s.roomNames[id] ?? id}`).join(', ')}` : null,
+          (s.tasks ?? []).length ? `tasks: ${(s.tasks ?? []).length} running (/agent-chat tasks)` : null,
+          'rooms: /agent-chat rooms · help: /agent-chat help',
+        ].filter(Boolean).join('\n')
+      }
       const st = await bridgeCall($, 'GET', '/status')
       const s = await read($, chat)
       return [
