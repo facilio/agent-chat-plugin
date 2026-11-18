@@ -1,3 +1,4 @@
+// A copy lives only here (agent-chat-view); agent-chat sends the deliveries this reads.
 // How the transcript shows a delivery of room messages (the prompt the plugin
 // sends the model): parsed back into rooms and messages, display only. The
 // model's text is never changed.
@@ -22,11 +23,11 @@ const REPLY = /^\[replying to (.+?), message [\w-]+: "([\s\S]*)"\]$/
 // "Bob Kumar (@bob)" -> "Bob Kumar"
 export function shortSender(s: string): string {
   const agent = /^(@[\w-]+) \((.+?)'s agent\b/.exec(s)
-  if (agent) return `${agent[1]} · ${agent[2].split(' ')[0]}'s agent`
+  if (agent) return `${agent[1] ?? ''} · ${(agent[2] ?? '').split(' ')[0] ?? ''}'s agent`
   const bare = /^(@[\w-]+) \(/.exec(s)          // "@alice-ai (session x)"
-  if (bare) return bare[1]
+  if (bare) return bare[1] ?? s
   const person = /^(.+?) \(@[\w.+-]+\)$/.exec(s)
-  return person ? person[1] : s
+  return person?.[1] ?? s
 }
 
 function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
@@ -46,7 +47,7 @@ function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
     if (/^\[(Agents in #.* were paused|#.* no longer has a description).*\]$/.test(line)) { b.notes.push(line.slice(1, -1)); continue }
     if (line.startsWith('· ')) { push({ sender: '', text: line.slice(2), system: true }); cur = null; continue }
     const m = SENDER.exec(line)
-    if (m) { push({ sender: shortSender(m[1]), full: m[1], text: m[2] }); continue }
+    if (m) { push({ sender: shortSender(m[1] ?? ''), full: m[1], text: m[2] ?? '' }); continue }
     if (!cur) { push({ sender: '', text: line }); continue }
     const c: RoomMsg = cur
     c.text = c.text ? `${c.text}\n${line}` : line
@@ -54,9 +55,9 @@ function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
   // The last message carries no sender when it's the only one: the tag's.
   for (const m of b.messages) if (!m.sender && !m.system) { m.sender = shortSender(attrs.from ?? ''); m.full = attrs.from }
   for (const m of [...b.earlier, ...b.messages]) {
-    const first = m.text.split('\n')[0]
+    const first = m.text.split('\n')[0] ?? ''
     const r = REPLY.exec(first)
-    if (r) { m.replyTo = `${shortSender(r[1])}: "${r[2]}"`; m.text = m.text.split('\n').slice(1).join('\n') }
+    if (r) { m.replyTo = `${shortSender(r[1] ?? '')}: "${r[2] ?? ''}"`; m.text = m.text.split('\n').slice(1).join('\n') }
   }
   return b
 }
@@ -66,11 +67,11 @@ export function parseDelivery(text: string): Delivery | null {
   let n = 0, last = ''
   const from = new Set<string>()
   for (const m of text.matchAll(/<agent-chat ([^>\n]*)>\n([\s\S]*?)\n<\/agent-chat>/g)) {
-    const attrs = Object.fromEntries([...m[1].matchAll(/(\w+)="([^"]*)"/g)].map(a => [a[1], a[2]]))
+    const attrs: Record<string, string> = Object.fromEntries([...(m[1] ?? '').matchAll(/(\w+)="([^"]*)"/g)].map(a => [a[1] ?? '', a[2] ?? '']))
     n += Number(attrs.count) > 0 ? Number(attrs.count) : 1
     last = attrs.message_id ?? last
-    if (attrs.from) from.add(shortSender(attrs.from).split(' · ')[0])
-    blocks.push(parseBlock(attrs, m[2]))
+    if (attrs.from) from.add(shortSender(attrs.from).split(' · ')[0] ?? attrs.from)
+    blocks.push(parseBlock(attrs, m[2] ?? ''))
   }
   if (!blocks.length) return null
   const rooms = [...new Set(blocks.map(b => `#${b.room}`))].join(', ')

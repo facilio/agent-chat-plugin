@@ -1,0 +1,10 @@
+{
+  "name": "agent-chat-view",
+  "version": "0.1.0",
+  "description": "Draws Agent Chat's room messages in the transcript: one line each (💬 Received 3 messages · #room ›), opening to a readable chat. Companion to agent-chat.",
+  "author": {
+    "name": "Facilio"
+  },
+  "homepage": "https://github.com/facilio/agent-chat-plugin",
+  "types": "./types/index.d.ts"
+}

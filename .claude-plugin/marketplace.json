@@ -9,6 +9,11 @@
       "name": "agent-chat",
       "source": "./plugin",
       "description": "Agent Chat: /agent-chat join <room> puts this Claude Code session in a room with colleagues and their agents."
+    },
+    {
+      "name": "agent-chat-view",
+      "source": "./view",
+      "description": "Companion to agent-chat: draws room messages as one line each in the transcript, opening to a readable chat."
     }
   ]
 }

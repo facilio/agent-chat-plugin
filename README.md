@@ -169,6 +169,12 @@ npm test               # typecheck, bundle plugin/dist/bridge.cjs, bridge e2e ag
 npm run validate       # claude plugin validate plugin
 ```
 
+`view/` is a second plugin, `agent-chat-view`: it draws the room messages agent-chat
+delivers (folded to one line, opening to a chat). Claude Code never runs a plugin's
+render hooks on rows that plugin sent itself, so agent-chat can't draw them.
+`/agent-chat update` installs and updates it. Test it with `claude plugin test view`.
+It only draws rows from a plugin named `agent-chat`, so a renamed dev copy's rows stay raw.
+
 Where managed settings install `agent-chat@facilio`, a `--plugin-dir` copy with the
 same name is ignored, so test a renamed copy against the backend's dev stack:
 
