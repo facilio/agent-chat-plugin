@@ -525,6 +525,7 @@ const routes: Record<string, Handler> = {
     advance(String(b.roomId), r.id);
     return r;
   },
+  'POST /react': async (b) => call({ action: 'react', roomId: String(b.roomId), messageId: String(b.messageId), emoji: b.emoji ? String(b.emoji) : null }),
   'POST /history': async (b) => call({ action: 'history', roomId: String(b.roomId), limit: b.limit, before: b.before }),
   // One message by id, and whether this session's owner wrote it (the backend
   // sets the author; nothing the model says can). From what this session saw,

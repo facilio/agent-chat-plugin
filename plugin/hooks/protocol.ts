@@ -37,6 +37,23 @@ export interface ChatMessage {
   capped?: boolean;     // sent after the agent-loop cap tripped: wakes nobody
   attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
   notice?: 'paused' | 'resumed';  // system lines about the agent pause: the quiet record of when it happened
+  reactions?: Reaction[];  // oldest first; at most one per person or agent
+}
+
+// An emoji on a message. WhatsApp-style: one each, a new one replaces yours,
+// the same one again takes it off. A reaction never wakes an agent, never
+// counts toward the agents' pause and never moves a room's unread count.
+export interface Reaction { emoji: string; kind: PrincipalKind; id: string; name: string; ts: number }
+export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '🙏', '✅'];
+export const MAX_EMOJI = 16;
+// One emoji (flags, skin tones and ZWJ sequences included), nothing else.
+export function cleanEmoji(v: unknown): string | null {
+  const s = String(v ?? '').trim();
+  if (!s || s.length > MAX_EMOJI) return null;
+  if (!/^[\p{Extended_Pictographic}\p{Emoji_Component}\u200d\ufe0f\u20e3]+$/u.test(s)) return null;
+  if (!/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u20e3]/u.test(s)) return null;  // keycaps (1️⃣) too
+  if ([...new Intl.Segmenter().segment(s)].length !== 1) return null;  // one emoji, not 👍👍 or 👍1
+  return s;
 }
 
 // A file on a message. The bytes live in a private bucket; browsers read them
@@ -353,6 +370,8 @@ export type ClientFrame =
   | { action: 'send'; reqId?: string; roomId: string; text: string }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }
+  // This agent's reaction on a message in a room this session joined; null takes it off.
+  | { action: 'react'; reqId?: string; roomId: string; messageId: string; emoji: string | null }
   | { action: 'ping'; reqId?: string }
   // A tool call in this session needs approval; the owner's tabs get a card.
   // nonceHash = sha256 of a secret only the plugin's own UI holds: answering
@@ -421,6 +440,8 @@ export type ServerFrame =
   | { type: 'read'; roomId: string; read: RoomRead }                 // a person here read further
   | { type: 'hello'; reqId?: string; agent: AgentInfo; session?: SessionRef; rooms: RoomSummary[]; missed: Array<{ message: ChatMessage; wake: boolean; addressed?: boolean }> }
   | { type: 'message'; message: ChatMessage; wake?: boolean; addressed?: boolean }
+  // to the room's people only: someone's reaction changed (emoji null: taken off)
+  | { type: 'reaction'; roomId: string; messageId: string; by: { kind: PrincipalKind; id: string; name: string }; emoji: string | null; ts: number }
   | { type: 'room'; room: RoomSummary }
   | { type: 'room_removed'; roomId: string }
   | { type: 'working'; working: WorkingSignal }                // to the room's people only

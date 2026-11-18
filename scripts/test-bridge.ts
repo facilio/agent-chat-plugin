@@ -297,6 +297,15 @@ async function main() {
     assert.deepEqual([sf.action, sf.roomId, sf.text], ['send', 'rm_1', 'us-west-2']);
     reply(sf, { id: 'zz0000006', capped: false });
     assert.equal((await sending).data.capped, false);
+    // a reaction goes straight through; "" (or nothing) takes it off
+    for (const [given, sent] of [['👍', '👍'], ['', null]] as const) {
+      const rxF = nextFrame();
+      const reacting = cmd('POST', '/react', { roomId: 'rm_1', messageId: 'zz0000006', emoji: given || null });
+      const rf = await rxF;
+      assert.deepEqual([rf.action, rf.roomId, rf.messageId, rf.emoji], ['react', 'rm_1', 'zz0000006', sent]);
+      reply(rf, { ok: true, emoji: sent });
+      assert.equal((await reacting).data.emoji, sent);
+    }
     const sessF = nextFrame();
     const sess = cmd('POST', '/session', { summary: 'reviewing pairing' });
     const ssf = await sessF;
