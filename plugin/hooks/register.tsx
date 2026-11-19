@@ -1129,6 +1129,7 @@ function drawSpans(ui: any, spans: Span[], key: string) {
     if (sp.href) return <Text key={k} {...style} color="suggestion" underline>{sp.text}</Text>
     if (sp.mention) return <Text key={k} {...style} color={MENTION_COLOR[sp.mention]}>{sp.text}</Text>
     if (sp.code) return <Text key={k} {...style} color={CODE_COLOR}>{sp.text}</Text>
+    if (sp.note) return <Text key={k} dimColor>{sp.text}</Text>
     return style.bold || style.italic || style.strikethrough ? <Text key={k} {...style}>{sp.text}</Text> : sp.text
   })
 }

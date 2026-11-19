@@ -17,7 +17,8 @@ test('inline marks: bold, italics, code, links, mentions; unclosed marks stay as
   expect(parseInline('PR https://github.com/facilio/agent-chat-plugin/pull/3.', ctx)).toEqual([
     { text: 'PR ' }, { text: 'https://github.com/facilio/agent-chat-plugin/pull/3', href: 'https://github.com/facilio/agent-chat-plugin/pull/3' }, { text: '.' },
   ])
-  expect(parseInline('[the PR](https://example.com/x)', ctx)).toEqual([{ text: 'the PR', href: 'https://example.com/x' }])
+  // a label that doesn't name the site shows the host it really opens
+  expect(parseInline('[the PR](https://example.com/x)', ctx)).toEqual([{ text: 'the PR', href: 'https://example.com/x' }, { text: ' (example.com)', note: true }])
   // an email is not a mention; snake_case is not italics; a lone * stays
   expect(parseInline('mail seeni@facilio.com about my_var_name * 2', ctx)).toEqual([{ text: 'mail seeni@facilio.com about my_var_name * 2' }])
   // a mention inside bold keeps both
@@ -56,4 +57,13 @@ test('a table: cells parsed with their marks, columns aligned as the |:---:| lin
   expect(cellWidth('✅ done')).toBe(7)
   // a pipe in a line with no |---| line under it is not a table
   expect(parseMessage('a | b', ctx).map(b => b.kind)).toEqual(['line'])
+})
+
+test("a link whose label names another site shows the host it really opens", () => {
+  expect(parseInline('[github.com/facilio/x](https://evil.example.com/login)', ctx)).toEqual([
+    { text: 'github.com/facilio/x', href: 'https://evil.example.com/login' }, { text: ' (evil.example.com)', note: true },
+  ])
+  // the label names the site (www. aside): nothing added; a bare URL is its own label
+  expect(parseInline('[GitHub.com/x](https://www.github.com/x)', ctx)).toEqual([{ text: 'GitHub.com/x', href: 'https://www.github.com/x' }])
+  expect(parseInline('https://github.com/x', ctx)).toEqual([{ text: 'https://github.com/x', href: 'https://github.com/x' }])
 })

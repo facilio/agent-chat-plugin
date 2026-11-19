@@ -16,6 +16,7 @@ export type Span = {
   strike?: boolean
   code?: boolean
   href?: string            // a link: text is what it shows
+  note?: boolean           // drawn dim: a link's real host, after a label that doesn't name it
   mention?: MentionKind    // an @mention: text is "@name"
 }
 export type Block =
@@ -34,6 +35,11 @@ export type MentionCtx = { agents: ReadonlySet<string> }
 
 const URL_RE = /https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"*_`]/y
 const MENTION_RE = /@([A-Za-z0-9][\w-]*)(?::[\w.-]+)?/y
+
+// The host a link opens, without "www.": what a label is checked against.
+export function linkHost(url: string): string {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, '') } catch { return '' }
+}
 
 function mentionKind(handle: string, ctx: MentionCtx): MentionKind {
   const h = handle.toLowerCase()
@@ -62,7 +68,15 @@ export function parseInline(src: string, ctx: MentionCtx, style: Omit<Span, 'tex
       const m = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/y
       m.lastIndex = i
       const r = m.exec(src)
-      if (r) { flush(); out.push({ ...style, text: r[1]!, href: r[2]! }); i = m.lastIndex; continue }
+      if (r) {
+        flush()
+        out.push({ ...style, text: r[1]!, href: r[2]! })
+        // a label that doesn't name the site it opens shows the real one
+        const host = linkHost(r[2]!)
+        if (host && !r[1]!.toLowerCase().includes(host)) out.push({ text: ` (${host})`, note: true })
+        i = m.lastIndex
+        continue
+      }
     }
     // a bare URL
     if ((c === 'h') && !wordChar(src[i - 1])) {
