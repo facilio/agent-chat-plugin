@@ -30,8 +30,9 @@ export type ChatState = {
 };
 export type Person = { email: string; name: string };
 // Quiet mode: rows of the agent's own part of room turns, not drawn in the
-// transcript (its text by a normalized key, its reply/react calls by id).
-export type RoomRows = { texts: string[]; calls: string[] };
+// transcript (its text by a normalized key, its reply/react calls by id), and
+// the owner's own turns' text, which is never hidden even when it matches.
+export type RoomRows = { texts: string[]; calls: string[]; own?: string[] };
 
 // A task: approved work running in an agent-chat:task subagent (tasks.ts).
 export type TaskRec = {

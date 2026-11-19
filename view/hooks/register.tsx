@@ -45,11 +45,11 @@ function drawBlock(ui: any, b: RoomBlock, named: boolean, key: string, dimAll?: 
   )
 }
 
-// An opened delivery is normal text on a gray background, the way
+// An opened delivery is normal text on the theme's subtle gray, the way
 // Claude Code opens its own rows. It is plain text, not a button (a button
 // inverts under the pointer, which makes it hard to read with the cursor):
 // the header line or the "⌃ fold" line under it folds it again.
-export const OPEN_BG = '#3a3a3a'
+export const OPEN_BG = 'subtle'
 export const register: Register = on => {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const p = e.props as any

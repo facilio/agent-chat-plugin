@@ -217,7 +217,7 @@ test('/agent-chat quiet on|off is kept across sessions and starts off', async ($
 
 // Quiet mode: the agent's own part of a room turn isn't drawn.
 const ROOM_ROWS = (texts: string[], calls: string[]) => ({ shape: 'roomRows-1', value: { texts, calls } })
-test("quiet: a room turn's own text and reply/react rows aren't drawn; ctrl+o shows the calls", async ($, on) => {
+test("quiet: a room turn's own text, react rows and result lines aren't drawn; ctrl+o shows them", async ($, on) => {
   const st = engine(on)
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   st.seed('chat', chatValue({}))
@@ -253,6 +253,37 @@ test("quiet: a room turn's own text and reply/react rows aren't drawn; ctrl+o sh
     expect(await ui.find({ type: 'Text', text: /^👍 Reacted in #general$/ })).toBeDefined()
     await ui.unmount()
   }
+  // ctrl+o brings back the hidden result line
+  ui = await $.ui.mount({ ...result('toolu_room'), props: { ...result('toolu_room').props, isExpanded: true } })
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test("quiet: the owner's own text is never hidden, even when a room turn wrote the same; a reply keeps its ↗️ line", async ($, on) => {
+  const st = engine(on)
+  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
+  st.seed('chat', chatValue({}))
+  st.seed('roomRows', { shape: 'roomRows-1', value: { texts: ['Done.', 'Posted the summary.'], calls: ['toolu_reply'], own: ['Done.'] } })
+  const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
+  let ui = await $.ui.mount(said('Done.'))
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  ui = await $.ui.mount(said('Posted the summary.'))
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
+  // only the whole text: a row that is only the start of a kept text is drawn
+  ui = await $.ui.mount(said('Posted'))
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  const reply = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: 'toolu_reply',
+    props: { tool_use_id: 'toolu_reply', tool: 'mcp__agent-chat__reply', input: { room_id: 'rm_1', text: 'Posted the summary.' }, isRunning: false, isErrored: false, isInterrupted: false } } as any
+  ui = await $.ui.mount(reply)
+  expect(await ui.find({ type: 'Text', text: /^↗️ #general · @agent ›$/ })).toBeDefined()
+  await ui.unmount()
+  const sent = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: 'toolu_reply', props: { tool_use_id: 'toolu_reply', tool: 'mcp__agent-chat__reply', output: 'sent', isErrored: false } } as any
+  ui = await $.ui.mount(sent)
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test("the agent's post is one gray line that opens to the post with a fold line; its \"⎿ sent\" is gray too", async ($, on) => {
@@ -263,7 +294,7 @@ test("the agent's post is one gray line that opens to the post with a fold line;
     props: { tool_use_id: 'toolu_p', tool: 'mcp__agent-chat__reply', input: { room_id: 'rm_1', text: '**Politics**\n\nA long essay.', reply_to: 'm1' }, isRunning: false, isErrored: false, isInterrupted: false } } as any
   let ui = await $.ui.mount(post)
   const row = await ui.find({ type: 'Text', text: /^↗️ #general · @agent \(a reply\) ›$/ })
-  expect(row?.props.color).toBe('#6c6c6c')
+  expect(row?.props.color).toBe('inactive')
   expect(await ui.find({ type: 'Text', text: /^Politics$/ })).toBeDefined()
   // (this test's stand-in $.state doesn't redraw on a write: mount again after each press)
   await ui.press({ key: 'tu-toolu_p' }); await ui.unmount(); ui = await $.ui.mount(post)
