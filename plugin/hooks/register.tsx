@@ -274,7 +274,7 @@ async function onEvent($: $, ev: any) {
       // as context with the room's next wake.
       const words = firstWords(plain(ev.text))
       const files = Number(ev.files) > 0 ? ` 📎${Number(ev.files) > 1 ? ev.files : ''}` : ''
-      $.ui.log(`💬 #${plain(ev.roomName)} · ${plain(ev.from)}${words ? ` › ${words}` : ''}${files}`)
+      $.ui.log(`  ${IN_ICON} #${plain(ev.roomName)} (1) · ${plain(ev.from)} ›${words ? `\n    ${words}` : ''}${files}`)
       return
     }
     case 'pairing':
@@ -1009,6 +1009,18 @@ async function settlePane($: $, roomId?: string): Promise<void> {
   if (v?.pinned) void loadView($, roomId ?? v.roomId).catch(() => {})
   else await $.ui.close({ id: PANE }).catch(() => {})
 }
+
+// How room messages look in the transcript (kept the same in
+// plugin/hooks/register.tsx and view/hooks/delivery.ts): one gray line each,
+// two columns in, the message's first line under it.
+//   ↙️ #room (1) · Bob ›          what reached the agent (agent-chat-view)
+//   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
+const IN_ICON = '↙️'
+const OUT_ICON = '↗️'
+// The rows' text color, darker than Claude Code's own gray (246)
+const ROW_FG = '#6c6c6c'
+// The gray background behind an opened row (as in agent-chat-view).
+const OPEN_BG = '#3a3a3a'
 
 // The first words of a room message, for its one line in the transcript.
 const PREVIEW_CHARS = 60
@@ -1753,22 +1765,30 @@ export const register: Register = on => {
     if (!p.isExpanded && (await read($, roomRows)).calls.includes(String(p.tool_use_id))) { const { Box } = $.ui.resolve(e) as any; return <Box /> }
     const input = (p.input ?? {}) as any
     const s = await read($, chat)
-    const room = plain(`#${s.roomNames[String(input.room_id ?? '')] ?? input.room_id ?? 'room'}`)
+    const room = plain(s.roomNames[String(input.room_id ?? '')] ?? input.room_id ?? 'room')
+    const me = `@${plain(lastStatus?.me?.name ?? 'agent')}`
     const ui = $.ui.resolve(e) as any
     const { Box, Text, Button } = ui
-    if (t === 'react') return <Text dimColor>{input.emoji ? `${plain(input.emoji)} Reacted in ${room}` : `Took a reaction off in ${room}`}</Text>
-    if (t === 'read_history') return <Text dimColor>📜 Read {room}{input.limit ? ` (last ${Number(input.limit) || ''})` : ''}{input.before ? ', older messages' : ''}</Text>
+    // One gray line two columns in, ↗️ for a post, with its first line under it
+    if (t === 'react') return <Box paddingLeft={2}><Text color={ROW_FG}>{input.emoji ? `${plain(input.emoji)} Reacted in #${room}` : `Took a reaction off in #${room}`}</Text></Box>
+    if (t === 'read_history') return <Box paddingLeft={2}><Text color={ROW_FG}>📜 Read #{room}{input.limit ? ` (last ${Number(input.limit) || ''})` : ''}{input.before ? ', older messages' : ''}</Text></Box>
     const text = String(input.text ?? '')
     const key = `tu-${p.tool_use_id}`
     const isOpen = (await read($, opened)).includes(key)
     const toggle = () => { void update($, opened, o => o.includes(key) ? o.filter(k => k !== key) : [...o, key].slice(-50)) }
     const first = plain(text.split('\n').find(l => l.trim()) ?? '').replace(/[*_`#>]/g, '').trim()
     return (
-      <Box flexDirection="column">
-        <Button key={key} onPress={toggle}><Text dimColor>💬 {p.isRunning ? 'Posting' : 'Posted'} in {room}{input.reply_to ? ' (a reply)' : ''} {isOpen ? '⌄' : '›'}</Text></Button>
+      <Box flexDirection="column" paddingLeft={2} backgroundColor={isOpen ? OPEN_BG : undefined}>
+        <Button key={key} plain onPress={toggle}><Text color={ROW_FG}>{`${OUT_ICON} #${room} · ${me}${input.reply_to ? ' (a reply)' : ''}${p.isRunning ? ' (posting)' : ''} ${isOpen ? '⌄' : '›'}`}</Text></Button>
         {isOpen
-          ? <Box flexDirection="column" paddingLeft={2}>{mdBody(ui, text)}</Box>
-          : <Box paddingLeft={2}><Text dimColor wrap="truncate-end">{first.length > 120 ? `${first.slice(0, 119)}…` : first}</Text></Box>}
+          // normal text on a gray background, like Claude Code's own opened
+          // rows; the header or the "⌃ fold" line folds it (plain text, not a
+          // button: a button inverts under the pointer)
+          ? <Box flexDirection="column" paddingLeft={2}>
+              {mdBody(ui, text)}
+              <Box marginTop={1}><Button key={`${key}-fold`} plain onPress={toggle}><Text color={ROW_FG}>⌃ fold</Text></Button></Box>
+            </Box>
+          : <Box paddingLeft={2}><Text color={ROW_FG} wrap="truncate-end">{first.length > 120 ? `${first.slice(0, 119)}…` : first}</Text></Box>}
       </Box>
     )
   })
@@ -1789,11 +1809,19 @@ export const register: Register = on => {
       if (texts.length) await update($, roomRows, v => ({ ...v, texts: [...v.texts, ...texts].slice(-ROOM_ROWS_KEPT) }))
     }
   })
-  // The result line under a hidden reply/react row ("⎿ sent") goes too.
+  // The result line under a reply or react row ("⎿ sent"): not drawn for a
+  // quiet room turn's call, and otherwise drawn gray.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (!(await read($, roomRows)).calls.includes(String((e.props as any).tool_use_id))) return next(e)
-    const { Box } = $.ui.resolve(e)
-    return <Box />
+    const p = e.props as any
+    const { Box, Text } = $.ui.resolve(e) as any
+    if ((await read($, roomRows)).calls.includes(String(p.tool_use_id))) return <Box />
+    // The result line of a reply or react ("⎿ sent", "⎿ reacted 👋") in
+    // the gray of Claude Code's own "Prompt from…" line, not full strength
+    const tool = String(p.tool ?? '')
+    const own = tool.startsWith(`mcp__${NAME}__`) && QUIET_TOOLS.has(tool.slice(`mcp__${NAME}__`.length))
+    const out = typeof p.output === 'string' ? p.output : typeof p.output?.text === 'string' ? p.output.text : Array.isArray(p.output?.content) ? p.output.content.map((c: any) => c?.text ?? '').join('') : undefined
+    if (!own || p.isErrored || typeof out !== 'string') return next(e)
+    return <Box paddingLeft={2}><Text dimColor wrap="wrap">{`⎿  ${plain(out)}`}</Text></Box>
   })
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const t = rowKey(String((e.props as any).text ?? ''))

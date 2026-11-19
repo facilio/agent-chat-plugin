@@ -7,7 +7,7 @@
 // the delivery as agent-chat sent it.
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
-import { parseDelivery, type Delivery, type RoomBlock, type RoomMsg } from './delivery.ts'
+import { ROW_FG, parseDelivery, type Delivery, type RoomBlock, type RoomMsg } from './delivery.ts'
 
 const SENDER_PLUGIN = 'agent-chat'
 const opened = atom({ plugin: 'agent-chat-view', key: 'opened' } as const, [] as string[], { shape: 'opened-1' })
@@ -31,7 +31,7 @@ function drawMsg(ui: any, m: RoomMsg, key: string, dim?: boolean) {
     </Box>
   )
 }
-function drawBlock(ui: any, b: RoomBlock, named: boolean, key: string) {
+function drawBlock(ui: any, b: RoomBlock, named: boolean, key: string, dimAll?: boolean) {
   const { Box, Text } = ui
   return (
     <Box key={key} flexDirection="column" marginTop={named ? 1 : 0}>
@@ -40,11 +40,16 @@ function drawBlock(ui: any, b: RoomBlock, named: boolean, key: string) {
       {b.notes.map((n, i) => <Text key={`n${i}`} dimColor wrap="wrap">{plain(n)}</Text>)}
       {b.earlier.length ? <Box flexDirection="column"><Text dimColor>Earlier in #{plain(b.room)}</Text>{b.earlier.map((m, i) => drawMsg(ui, m, `e${i}`, true))}</Box> : null}
       {b.earlier.length && b.messages.length ? <Box marginTop={1}><Text dimColor>New</Text></Box> : null}
-      {b.messages.map((m, i) => drawMsg(ui, m, `m${i}`))}
+      {b.messages.map((m, i) => drawMsg(ui, m, `m${i}`, dimAll))}
     </Box>
   )
 }
 
+// An opened delivery is normal text on a gray background, the way
+// Claude Code opens its own rows. It is plain text, not a button (a button
+// inverts under the pointer, which makes it hard to read with the cursor):
+// the header line or the "⌃ fold" line under it folds it again.
+export const OPEN_BG = '#3a3a3a'
 export const register: Register = on => {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const p = e.props as any
@@ -56,14 +61,21 @@ export const register: Register = on => {
     // Always folded: the engine marks a short row "expanded" too, so
     // isExpanded can't tell ctrl+o from a short message.
     const ui = $.ui.resolve(e) as any
-    const { Box, Text, Button } = ui
+    const { Box, Button, Text } = ui
     const key = d.key
     const isOpen = (await read($, opened)).includes(key)
     const toggle = () => { void update($, opened, o => o.includes(key) ? o.filter(k => k !== key) : [...o, key].slice(-50)) }
+    // A plain button (a normal one draws its label bold) in a gray darker
+    // than Claude Code's own, two columns in like its "Ran 1 shell command".
     return (
-      <Box flexDirection="column">
-        <Button key={`rx-${key}`} onPress={toggle}><Text dimColor>{plain(d.label)} {isOpen ? '⌄' : '›'}</Text></Button>
-        {isOpen ? <Box flexDirection="column" paddingLeft={2}>{d.blocks.map((b, i) => drawBlock(ui, b, d!.blocks.length > 1, `b${i}`))}</Box> : null}
+      <Box flexDirection="column" paddingLeft={2} backgroundColor={isOpen ? OPEN_BG : undefined}>
+        <Button key={`rx-${key}`} plain onPress={toggle}><Text color={ROW_FG}>{`${plain(d.label)} ${isOpen ? '⌄' : '›'}`}</Text></Button>
+        {isOpen
+          ? <Box flexDirection="column" paddingLeft={2}>
+              {d.blocks.map((b, i) => drawBlock(ui, b, d!.blocks.length > 1, `b${i}`))}
+              <Box marginTop={1}><Button key={`rx-${key}-fold`} plain onPress={toggle}><Text color={ROW_FG}>⌃ fold</Text></Button></Box>
+            </Box>
+          : d.firstLine ? <Box paddingLeft={2}><Text color={ROW_FG} wrap="truncate-end">{plain(d.firstLine)}</Text></Box> : null}
       </Box>
     )
   })

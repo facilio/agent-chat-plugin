@@ -14,7 +14,7 @@
 
 export type RoomMsg = { sender: string; full?: string; text: string; system?: boolean; replyTo?: string }
 export type RoomBlock = { room: string; about?: string; notes: string[]; earlier: RoomMsg[]; messages: RoomMsg[]; decision?: string }
-export type Delivery = { key: string; label: string; blocks: RoomBlock[] }
+export type Delivery = { key: string; label: string; blocks: RoomBlock[]; firstLine?: string }
 
 const SENDER = /^(@[A-Za-z][\w-]* \([^()\n]*\)|[^\n:@()]{1,80} \(@[\w.+-]+\)): ?(.*)$/
 const REPLY = /^\[replying to (.+?), message [\w-]+: "([\s\S]*)"\]$/
@@ -62,6 +62,22 @@ function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
   return b
 }
 
+// How room messages look in the transcript (kept the same in
+// plugin/hooks/register.tsx and view/hooks/delivery.ts): one gray line each,
+// two columns in, the message's first line under it.
+//   ↙️ #room (1) · Bob ›          what reached the agent (agent-chat-view)
+//   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
+export const IN_ICON = '↙️'
+export const OUT_ICON = '↗️'
+// The rows' text color, darker than Claude Code's own gray (246)
+export const ROW_FG = '#6c6c6c'
+// The first words of the delivery's newest message, for its one-line label.
+export const PREVIEW_CHARS = 60
+export function firstWords(text: string, max = PREVIEW_CHARS): string {
+  const t = text.replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim()
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
 export function parseDelivery(text: string): Delivery | null {
   const blocks: RoomBlock[] = []
   let n = 0, last = ''
@@ -74,11 +90,13 @@ export function parseDelivery(text: string): Delivery | null {
     blocks.push(parseBlock(attrs, m[2] ?? ''))
   }
   if (!blocks.length) return null
-  const rooms = [...new Set(blocks.map(b => `#${b.room}`))].join(', ')
+  const rooms = [...new Set(blocks.map(b => b.room))]
   const who = [...from].slice(0, 2).join(', ') + (from.size > 2 ? ` +${from.size - 2}` : '')
   const decision = blocks.find(b => b.decision)?.decision
-  const label = decision
-    ? `💬 You ${decision} a request · ${rooms}`
-    : `💬 Received ${n} message${n === 1 ? '' : 's'} · ${rooms}${who ? ` · ${who}` : ''}`
-  return { key: `${last}:${n}:${blocks.length}`, label, blocks }
+  const newest = blocks[blocks.length - 1]!.messages.filter(m => !m.system).pop()
+  const hashed = rooms.map(r => `#${r}`).join(', ')
+  // The arrow says it came in: room (count) · who, the newest message's first line under it
+  const label = `${IN_ICON} ${hashed}${decision ? '' : ` (${n})`} · ${decision ? `You ${decision} a request` : who || 'Someone'}`
+  const firstLine = !decision && newest ? `${n > 1 && newest.sender ? `${newest.sender}: ` : ''}${firstWords(newest.text, 200)}` : undefined
+  return { key: `${last}:${n}:${blocks.length}`, label, blocks, firstLine }
 }
