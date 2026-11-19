@@ -94,7 +94,10 @@ test('the pane is the room as a chat, with the held post in full as its last mes
     const ui = await $.ui.mount(PANE(surface))
     expect(await ui.find({ type: 'Text', text: /Can someone post the deploy notes/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /👍 2/ })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /^Deploy notes:/ }))?.text).toMatch(/End\.$/)
+    // in full, drawn as markdown: the heading line, every list item, the last line
+    expect(await ui.find({ type: 'Text', text: /^Deploy notes:$/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /^a line of the notes that goes on for a while$/ })).toHaveLength(12)
+    expect(await ui.find({ type: 'Text', text: /^End\.$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /waiting for you/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Held because it mentions a file path/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'allow' })).toBeDefined()
@@ -128,6 +131,29 @@ test('the card offers a grant for 1 hour: a person, or messages to your other se
   ui = await $.ui.mount(PANE('terminal'))
   expect((await ui.find({ type: 'Button', key: 'person' }))?.text).toBe('Allow messages to your other sessions for 1 hour')
   expect(await ui.find({ type: 'Text', text: /each one says it is relayed/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a pane message draws bold italic, strikethrough and a table as columns; a table too wide for the bubble stays as typed', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const table = '| Item | Status |\n| --- | :---: |\n| Room join | ✅ done |'
+  const text = `***both*** and ~~gone~~\n\n${table}\n\n---\nend`
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, messages: [{ id: 'm1', who: '@odin', mine: false, text, ts: Date.now() }] } })
+  let ui = await $.ui.mount(PANE('terminal'))
+  const both = await ui.find({ type: 'Text', text: /^both$/ })
+  expect([both?.props.bold, both?.props.italic]).toEqual([true, true])
+  expect((await ui.find({ type: 'Text', text: /^gone$/ }))?.props.strikethrough).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^Item$/ }))?.props.bold).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^─+┼─+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\| --- \|/ })).toBeUndefined()
+  // a --- rule spans the bubble's inside, as wide as its widest line
+  expect(await ui.find({ type: 'Text', text: /^─{19}$/ })).toBeDefined()
+  await ui.unmount()
+  const wide = `| ${'a'.repeat(40)} | ${'b'.repeat(40)} |\n| --- | --- |\n| x | y |`
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, messages: [{ id: 'm1', who: '@odin', mine: false, text: wide, ts: Date.now() }] } })
+  ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '| --- | --- |' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -314,5 +340,26 @@ test("the agent's post is one gray line that opens to the post with a fold line;
   await ui.unmount()
   ui = await $.ui.mount({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: 'r2', props: { tool_use_id: 'toolu_r', tool: 'mcp__agent-chat__reply', output: 'sent', isErrored: false } } as any)
   expect((await ui.find({ type: 'Text', text: '⎿  sent' }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+// The pane draws a room message as formatted text, like the web: marks drawn,
+// @mentions and links in their own colors (paneMarkdown.ts).
+test('a pane message is drawn as markdown: bold, a list, code, colored @mentions and links; control characters still go', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const text = '@seenimohamed @caraxes **Agent Chat 0.16.0 is out**\u001b[2J. Run `/agent-chat update`.\n\n1. **Fixed:** the bridge\n- see https://github.com/facilio/agent-chat-plugin/pull/3\n- @everyone please update'
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, agents: ['odin', 'caraxes'], messages: [{ id: 'm1', who: '@odin', mine: false, text, ts: Date.now() }] } })
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /\*\*/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^Agent Chat 0\.16\.0 is out$/ }))?.props.bold).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^\/agent-chat update$/ }))?.props.color).toBe('permission')
+  expect((await ui.find({ type: 'Text', text: /^@caraxes$/ }))?.props.color).toBe('merged')
+  expect((await ui.find({ type: 'Text', text: /^@seenimohamed$/ }))?.props.color).toBe('suggestion')
+  expect((await ui.find({ type: 'Text', text: /^@everyone$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/facilio/agent-chat-plugin/pull/3')
+  expect(await ui.find({ type: 'Text', text: /^1\. $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^• $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\u001b/ })).toBeUndefined()
   await ui.unmount()
 })

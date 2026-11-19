@@ -61,7 +61,9 @@ export type Approval = { requestId: string; tool: string; description: string; p
 
 // The room the pane shows as a chat (display only: never reaches the model).
 export type PaneMsg = { id: string; who: string; mine: boolean; system?: boolean; text: string; ts: number; reactions?: string };
-export type PaneView = { roomId: string; roomName: string; messages: PaneMsg[]; pinned?: boolean };
+// agents: names seen as agent authors in the room (lowercase), so the pane
+// colors an @mention of an agent apart from one of a person.
+export type PaneView = { roomId: string; roomName: string; messages: PaneMsg[]; pinned?: boolean; agents?: string[] };
 // A colleague's request waiting for the owner (ask_owner), as the pane shows it:
 // who asked and what they wrote come from the server, the summary is the agent's.
 export type PaneAsk = { askId: string; roomId: string; roomName: string; requesterName: string; requestText: string; summary: string; expiresAt: number };

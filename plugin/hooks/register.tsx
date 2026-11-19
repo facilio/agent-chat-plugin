@@ -23,6 +23,7 @@ import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec,
 import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
+import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
 import { GRANT_MS, OWNER_ACTS, READ_TOOLS, RELAYED, coveredBy, grantLabel, holdsOnTaintedTurn, liveGrants, personLabel, relayedLabel, timeLeft, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
@@ -1090,7 +1091,8 @@ async function loadView($: $, roomId: string, pin?: boolean): Promise<void> {
     reactions: m.reactions?.length ? reactionLine(m.reactions) : undefined,
   }))
   const roomName = (await read($, chat)).roomNames[roomId] ?? roomId
-  await update($, view, v => ({ roomId, roomName, messages, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
+  const agents = [...new Set(msgs.filter(m => m.authorKind === 'agent').map(m => String(m.authorName).toLowerCase()))]
+  await update($, view, v => ({ roomId, roomName, messages, agents, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
   void paneToEnd($)
 }
 function reactionLine(rx: any[]): string {
@@ -1110,6 +1112,83 @@ function viewChanged($: $, roomId: string) {
       if (v && v.roomId === roomId && (v.pinned || (await read($, approval)))) await loadView($, roomId)
     })().catch(() => {})
   })
+}
+
+// ------------------------------------------------- a pane message as formatted text
+// (paneMarkdown.ts parses it). Theme colors, so a light theme reads too:
+// an agent's @mention in the theme's purple, a person's in its blue, @everyone
+// in its warning yellow, links in blue and underlined, code in its own color.
+const MENTION_COLOR = { agent: 'merged', person: 'suggestion', everyone: 'warning' } as const
+const CODE_COLOR = 'permission'
+function drawSpans(ui: any, spans: Span[], key: string) {
+  const { Text, Link } = ui
+  return spans.map((sp, i) => {
+    const k = `${key}-${i}`
+    const style = { bold: sp.bold || !!sp.mention || undefined, italic: sp.italic || undefined, strikethrough: sp.strike || undefined }
+    if (sp.href && Link) return <Link key={k} href={sp.href}><Text {...style} color="suggestion" underline>{sp.text}</Text></Link>
+    if (sp.href) return <Text key={k} {...style} color="suggestion" underline>{sp.text}</Text>
+    if (sp.mention) return <Text key={k} {...style} color={MENTION_COLOR[sp.mention]}>{sp.text}</Text>
+    if (sp.code) return <Text key={k} {...style} color={CODE_COLOR}>{sp.text}</Text>
+    return style.bold || style.italic || style.strikethrough ? <Text key={k} {...style}>{sp.text}</Text> : sp.text
+  })
+}
+// A table as aligned columns, the header bold over a ─┼─ line; wider than
+// `max` (the bubble's inside), its lines as typed, so nothing is cut off.
+const ALIGN_BOX = { left: 'flex-start', center: 'center', right: 'flex-end' } as const
+function drawTable(ui: any, b: Extract<Block, { kind: 'table' }>, k: string, max: number) {
+  const { Box, Text } = ui
+  const { widths, lines } = tableLines(b)
+  if (Math.max(...lines.map(cellWidth)) > max) return <Box key={k} flexDirection="column">{b.raw.map((l, j) => <Text key={`${k}-${j}`} wrap="wrap">{l}</Text>)}</Box>
+  const row = (r: Span[][], j: number, head: boolean) => (
+    <Box key={`${k}-r${j}`} flexDirection="row">
+      {r.flatMap((c, n) => [
+        n ? <Text key={`s${n}`} dimColor> │ </Text> : null,
+        <Box key={`c${n}`} width={widths[n]} justifyContent={ALIGN_BOX[b.align[n] ?? 'left']}><Text bold={head || undefined}>{drawSpans(ui, c, `${k}-${j}-${n}`)}</Text></Box>,
+      ])}
+    </Box>
+  )
+  return (
+    <Box key={k} flexDirection="column">
+      {row(b.rows[0]!, 0, true)}
+      <Text dimColor>{lines[1]}</Text>
+      {b.rows.slice(1).map((r, j) => row(r, j + 1, false))}
+    </Box>
+  )
+}
+// `inner`: the bubble's inside width, which a --- rule spans.
+function drawBlocks(ui: any, blocks: Block[], key: string, max = 1000, inner = 3) {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
+      {blocks.map((b, i) => {
+        const k = `${key}-b${i}`
+        switch (b.kind) {
+          case 'blank': return <Text key={k}> </Text>
+          case 'rule': return <Text key={k} dimColor>{'─'.repeat(Math.max(3, inner))}</Text>
+          case 'table': return drawTable(ui, b, k, max)
+          case 'code': return (
+            <Box key={k} flexDirection="column" paddingLeft={2}>
+              {b.lines.map((l, j) => <Text key={`${k}-${j}`} color={CODE_COLOR} wrap="wrap">{l || ' '}</Text>)}
+            </Box>
+          )
+          case 'item': return (
+            <Box key={k} flexDirection="row" paddingLeft={b.indent * 2}>
+              <Text>{b.marker} </Text>
+              <Box flexShrink={1}><Text wrap="wrap">{drawSpans(ui, b.spans, k)}</Text></Box>
+            </Box>
+          )
+          case 'quote': return (
+            <Box key={k} flexDirection="row">
+              <Text dimColor>│ </Text>
+              <Box flexShrink={1}><Text dimColor italic wrap="wrap">{drawSpans(ui, b.spans, k)}</Text></Box>
+            </Box>
+          )
+          case 'heading': return <Text key={k} bold wrap="wrap">{drawSpans(ui, b.spans, k)}</Text>
+          default: return <Text key={k} wrap="wrap">{drawSpans(ui, b.spans, k)}</Text>
+        }
+      })}
+    </Box>
+  )
 }
 
 // ------------------------------------------------- the agent's own posts in the transcript
@@ -1679,7 +1758,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button } = ui
     const a = await read($, approval)
     const v = await read($, view)
     const s = await read($, chat)
@@ -1695,14 +1775,23 @@ export const register: Register = on => {
     }
     const cols = Math.max(24, Number((e.props as any).bodyColumns) || 80)
     const widest = Math.max(20, Math.floor(cols * 0.78))
-    const fit = (t: string, extra = 4) => Math.min(widest, Math.max(12, ...t.split('\n').map(l => l.length + extra)))
+    // a message's width: its widest line as drawn (markdown marks gone), plus the border and padding
+    const fit = (lines: string[], extra = 4, max = widest) => Math.min(max, Math.max(12, ...lines.map(l => cellWidth(l) + extra)))
+    const mctx: MentionCtx = { agents: new Set(v?.agents ?? []) }
     const time = (ts: number) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
     const bubble = (m: { id: string; who: string; mine: boolean; text: string; ts?: number; reactions?: string }, opts?: { waiting?: boolean }) => (
       <Box key={m.id} flexDirection="column" alignItems={m.mine ? 'flex-end' : 'flex-start'} marginBottom={1}>
         <Text dimColor>{m.who}{m.ts ? ` · ${time(m.ts)}` : ''}{opts?.waiting ? ' · waiting for you' : ''}</Text>
-        <Box borderStyle="round" borderColor={opts?.waiting ? 'yellow' : m.mine ? 'cyan' : 'gray'} paddingX={1} width={fit(m.text)}>
-          <Text wrap="wrap">{plain(m.text) || ' '}</Text>
-        </Box>
+        {(() => {
+          const blocks = parseMessage(plain(m.text) || ' ', mctx)
+          // a message with a table may take the pane's full width, so its columns fit
+          const max = blocks.some(b => b.kind === 'table') ? cols : widest
+          return (
+            <Box borderStyle="round" borderColor={opts?.waiting ? 'yellow' : m.mine ? 'cyan' : 'gray'} paddingX={1} width={fit(visibleLines(blocks), 4, max)}>
+              {drawBlocks(ui, blocks, m.id, max - 4, fit(visibleLines(blocks), 4, max) - 4)}
+            </Box>
+          )
+        })()}
         {m.reactions ? <Text>{m.reactions}</Text> : null}
       </Box>
     )
