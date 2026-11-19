@@ -19,7 +19,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Approval, ChatState, PaneMsg, PaneView, Person, TaskRec, PaneAsk } from '../types'
+import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec, PaneAsk } from '../types'
 import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
@@ -207,7 +207,7 @@ async function ensureBridge($: $): Promise<void> {
     const child = $.process.spawn({
       argv: ['node', `${$.plugin.root}/dist/bridge.cjs`],
       env,
-      input: JSON.stringify({ secret, socketPath, sessionId: s.sessionId, label, summary: s.summary, title: s.title, rooms: s.joined, cursors: s.cursors, emailHint }),
+      input: JSON.stringify({ secret, socketPath, sessionId: s.sessionId, label, summary: s.summary, title: s.title, rooms: s.joined, cursors: s.cursors, emailHint, quiet: await isQuiet($) }),
     })
     let ready!: () => void
     let failed!: (e: Error) => void
@@ -268,6 +268,15 @@ async function onEvent($: $, ev: any) {
       await update($, chat, v => ({ ...v, cursors: { ...v.cursors, [ev.roomId]: ev.id } }))
       viewChanged($, String(ev.roomId))
       return
+    case 'heard': {
+      // Quiet mode: a room message not for the agent that names the owner (the
+      // bridge sends only those). One gray line, not a turn; the model gets it
+      // as context with the room's next wake.
+      const words = firstWords(plain(ev.text))
+      const files = Number(ev.files) > 0 ? ` 📎${Number(ev.files) > 1 ? ev.files : ''}` : ''
+      $.ui.log(`💬 #${plain(ev.roomName)} · ${plain(ev.from)}${words ? ` › ${words}` : ''}${files}`)
+      return
+    }
     case 'pairing':
       $.ui.log(`Agent Chat: link this computer — open ${ev.url} and click Link (code ${ev.code}).`)
       void $.ui.notify(`Open the link in your terminal to connect this computer (code ${ev.code}).`, { title: 'Agent Chat' }).catch(() => {})
@@ -1001,6 +1010,26 @@ async function settlePane($: $, roomId?: string): Promise<void> {
   else await $.ui.close({ id: PANE }).catch(() => {})
 }
 
+// The first words of a room message, for its one line in the transcript.
+const PREVIEW_CHARS = 60
+function firstWords(text: string, max = PREVIEW_CHARS): string {
+  const t = text.replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim()
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+// Quiet mode, kept across sessions like paneOff. Off unless the person turns
+// it on: messages addressed to nobody here then draw one line and take no turn.
+const isQuiet = async ($: $) => (await $.store.get('quiet')) === true
+// In quiet mode the agent's own part of a room turn (its text, its reply and
+// react rows) is not drawn: it is in the room and the pane. Kept in $.state
+// so a redraw after a reload still hides them; ctrl+o shows the tool rows.
+const roomRows = atom({ plugin: 'agent-chat', key: 'roomRows' } as const, { texts: [], calls: [] } as RoomRows, { shape: 'roomRows-1' })
+const rowKey = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 300)
+const ROOM_ROWS_KEPT = 200
+// The room turn's text streaming now, by block: drawn before it is kept.
+const liveRoomText = new Map<number, string>()
+const QUIET_TOOLS = new Set(['reply', 'react'])
+
 // ------------------------------------------------------------ the pane's chat
 // Display only: what the pane draws never reaches the model.
 const PANE_ROWS = 22
@@ -1065,6 +1094,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat summary <on|off|text>  the one-line "working on" shown next to the label
   /agent-chat connect            link this computer again (new link)
   /agent-chat pane               open the room chat in a pane, or close it (a toggle)
+  /agent-chat quiet <on|off>     on: messages not for this agent take no turn; only those naming you show, as one line
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
   /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
   /agent-chat pane close         close it (it opens again only when something needs your OK)
@@ -1170,6 +1200,7 @@ async function command($: $, args: string): Promise<string> {
         `session: ${st.session?.label ?? s.label ?? '?'}${s.pinnedLabel ? ' (set by hand)' : ''}${s.title ? `  · title: ${s.title} (only you see it)` : ''}`,
         `summary: ${s.summary ?? '—'}${(await $.store.get('summaryOff')) === true ? ' (auto-summary off)' : s.pinnedSummary ? ' (set by hand)' : ''}`,
         `rooms: ${st.rooms.map((r: any) => `#${r.name}`).join(', ') || 'none'}`,
+        `quiet: ${(await isQuiet($)) ? 'on (messages not addressed to this agent take no turn)' : 'off'}`,
         `approvals: ${(await $.store.get('paneOff')) === true ? 'normal prompt only (pane off)' : 'web and pane, for requests a room message led to'}`,
         st.pairing ? `link: ${st.pairing.url} (code ${st.pairing.code})` : null,
         toolProblems.length ? `⚠ tools not registered (can't reply): ${toolProblems.join('; ')}` : null,
@@ -1301,6 +1332,17 @@ async function command($: $, args: string): Promise<string> {
       return s.grantedPeople?.length
         ? `Allowed for this session: ${s.grantedPeople.map(personLabel).join(', ')} (turns only they or their agents start don't ask). Everyone else still asks. /agent-chat hold on to ask again.`
         : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for this session" on a card stops asking for turns that person starts.'
+    }
+    case 'quiet': {
+      if (arg !== 'on' && arg !== 'off') {
+        return `quiet: ${(await isQuiet($)) ? 'on' : 'off'}   (/agent-chat quiet on|off)`
+      }
+      const on = arg === 'on'
+      await $.store.set('quiet', on)
+      if (bridge) await bridgeCall($, 'POST', '/quiet', { on }).catch(() => {})
+      return on
+        ? 'Quiet on (for all your sessions). Room messages not addressed to this agent take no turn and stay out of this terminal, except one gray line for those that name you; the agent sees them as context the next time it is addressed. /agent-chat pane view shows the room.'
+        : 'Quiet off. Every room message this session hears starts a turn again (the agent replies only if useful).'
     }
     case 'pane': {
       // Bare `/agent-chat pane` toggles: opens the room chat, or closes it.
@@ -1481,6 +1523,11 @@ export const register: Register = on => {
   on('tool.call', { tool: new RegExp(`^mcp__${NAME}__`) }, async ($, e, next) => {
     const name = e.tool.slice(`mcp__${NAME}__`.length)
     if (!TOOLS.some(t => t.name === name)) return next(e)
+    // Quiet mode: a room turn's reply and react rows aren't drawn (roomRows).
+    if (roomTurn && e.agentId === undefined && QUIET_TOOLS.has(name) && (e as any).tool_use_id && (await isQuiet($))) {
+      const id = String((e as any).tool_use_id)
+      await update($, roomRows, v => ({ ...v, calls: [...v.calls, id].slice(-ROOM_ROWS_KEPT) }))
+    }
     try {
       // The reply guard lives here, not in tool.check: Claude Code doesn't run
       // tool.check for a plugin's own registered tools. A reply goes out unasked
@@ -1703,6 +1750,7 @@ export const register: Register = on => {
     if (!name.startsWith(`mcp__${NAME}__`)) return next(e)
     const t = name.slice(`mcp__${NAME}__`.length)
     if (!['reply', 'react', 'read_history'].includes(t) || p.isErrored || p.isInterrupted) return next(e)
+    if (!p.isExpanded && (await read($, roomRows)).calls.includes(String(p.tool_use_id))) { const { Box } = $.ui.resolve(e) as any; return <Box /> }
     const input = (p.input ?? {}) as any
     const s = await read($, chat)
     const room = plain(`#${s.roomNames[String(input.room_id ?? '')] ?? input.room_id ?? 'room'}`)
@@ -1723,6 +1771,37 @@ export const register: Register = on => {
           : <Box paddingLeft={2}><Text dimColor wrap="truncate-end">{first.length > 120 ? `${first.slice(0, 119)}…` : first}</Text></Box>}
       </Box>
     )
+  })
+
+  // Quiet mode: what the agent writes in a room turn is in the room and the
+  // pane, so the transcript doesn't draw it. Its text is recorded as it
+  // streams (drawn rows are matched to it), and kept once the step ends.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined || !roomTurn || !(await isQuiet($))) return yield* next(e)
+    liveRoomText.clear()
+    try {
+      for await (const c of next(e)) {
+        if (c.kind === 'text') liveRoomText.set(c.index, (liveRoomText.get(c.index) ?? '') + c.text)
+        yield c
+      }
+    } finally {
+      const texts = [...liveRoomText.values()].map(rowKey).filter(Boolean)
+      if (texts.length) await update($, roomRows, v => ({ ...v, texts: [...v.texts, ...texts].slice(-ROOM_ROWS_KEPT) }))
+    }
+  })
+  // The result line under a hidden reply/react row ("⎿ sent") goes too.
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (!(await read($, roomRows)).calls.includes(String((e.props as any).tool_use_id))) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const t = rowKey(String((e.props as any).text ?? ''))
+    if (!t) return next(e)
+    const live = roomTurn && [...liveRoomText.values()].some(x => rowKey(x).startsWith(t))
+    if (!live && !(await read($, roomRows)).texts.includes(t)) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
 
   // A compaction can drop the rules the model was given: send them again with

@@ -290,6 +290,29 @@ async function main() {
     await new Promise((r) => setTimeout(r, 30));
     assert.equal((await wakeOf('zz0000005z', mineOnly)).trusted, false, "a colleague's earlier line rides along");
 
+    // 4b. quiet mode: a batch that addresses nobody here takes no turn. It's
+    //     one 'heard' line per message, and context for the room's next wake.
+    assert.deepEqual((await cmd('POST', '/quiet', { on: true })).data, { quiet: true });
+    // a message to someone else: no wake, and nothing for the terminal
+    sock.send(JSON.stringify({ type: 'message', message: { ...msg('zz0000005zp', '@bob lunch?'), mentions: ['bob'] }, wake: true, addressed: false }));
+    // one that names the owner: no wake, one 'heard' line
+    const heardP = nextEvent((e) => e.type === 'heard' && e.messageId === 'zz0000005zq');
+    sock.send(JSON.stringify({ type: 'message', message: { ...msg('zz0000005zq', '@owner anyone seen the\nbuild?'), mentions: ['owner'] }, wake: true, addressed: false }));
+    const heard = await heardP;
+    assert.deepEqual([heard.roomId, heard.roomName, heard.from, heard.text, heard.files], ['rm_1', 'general', 'Colleague', '@owner anyone seen the\nbuild?', 0]);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(events.filter((e) => e.type === 'wake' && /zz0000005z[pq]/.test(e.text)).length, 0, 'quiet: no wake for an unaddressed message');
+    assert.equal(events.filter((e) => e.type === 'heard' && e.messageId === 'zz0000005zp').length, 0, "quiet: a message to someone else isn't shown");
+    const quietCtx = await wakeOf('zz0000005zr', {});
+    assert.match(quietCtx.text, /\[earlier in #general\]\nColleague \(@colleague\): @bob lunch\?\nColleague \(@colleague\): @owner anyone seen the\nbuild\?\n---/, 'the quiet messages ride along with the next wake');
+    assert.match(quietCtx.text, /addressed="true" message_id="zz0000005zr"/);
+    // an addressed message still wakes in quiet mode, and quiet off wakes for everything again
+    assert.deepEqual((await cmd('POST', '/quiet', { on: false })).data, { quiet: false });
+    const loudP = nextEvent((e) => e.type === 'wake' && e.text.includes('message_id="zz0000005zs"'));
+    sock.send(JSON.stringify({ type: 'message', message: msg('zz0000005zs', 'fyi'), wake: true, addressed: false }));
+    assert.match((await loudP).text, /addressed="false"/);
+    assert.equal(events.filter((e) => e.type === 'heard' && e.messageId === 'zz0000005zs').length, 0);
+
     // 5. reply + summary update
     const sendF = nextFrame();
     const sending = cmd('POST', '/send', { roomId: 'rm_1', text: 'us-west-2' });
