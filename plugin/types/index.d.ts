@@ -24,9 +24,15 @@ export type ChatState = {
   // agent counts as its owner). Null when that can't be pinned on people,
   // e.g. a room description, which any member edits.
   turnFrom?: Person[] | null;
-  // "Allow <person> for this session": turns only they (or their agents)
-  // started skip the hold for the rest of the session. Everyone else still asks.
-  grantedPeople?: Person[];
+  // The rooms whose messages started the current held turn (the relayed label).
+  turnRooms?: string[];
+  // "Allow <person> for 1 hour": turns only they (or their agents) start skip
+  // the hold until `until` (ms). A grant without one (stored before grants
+  // expired) counts as run out. Everyone else still asks.
+  grantedPeople?: Array<Person & { until?: number }>;
+  // "Allow messages to your other sessions for 1 hour": SendMessage on a held
+  // turn goes out unasked until then (labelled as relayed).
+  sendUntil?: number;
 };
 export type Person = { email: string; name: string };
 // Quiet mode: the reply/react calls of room turns, by id; their react rows

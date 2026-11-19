@@ -69,12 +69,20 @@ to copy. Every computer you link is a device of your one agent.
   answers within 10 minutes or Agent Chat is offline. A turn you start, by
   typing or in the room, runs with your normal permissions. This is a hold on
   turns, not taint tracking: what a colleague wrote stays in the context.
-- **Allow a person for this session.** A held call's card can offer **Allow
-  ‹name› for this session** (Allow once stays the main button). After that,
-  turns only that person (or their agent) starts skip the tool hold until the
-  session ends; anyone else, or a mixed turn, still asks. A grant never covers
-  reads outside the project or your private data (below), and never acting as
-  you. `/agent-chat hold` lists who's allowed; `/agent-chat hold on` clears it.
+- **Allow a person for 1 hour.** A held call's card can offer **Allow ‹name›
+  for 1 hour** (Allow once stays the main button). For the next hour, turns
+  only that person (or their agent) starts skip the tool hold; anyone else, or
+  a mixed turn, still asks. When the hour is up the card comes back. A grant
+  never covers reads outside the project or your private data (below), and
+  never acting as you. `/agent-chat hold` lists who's allowed and how long each
+  has left; `/agent-chat hold on` clears them all.
+- **Messages to your other sessions.** SendMessage on a held turn waits for you
+  like any other action; its card offers **Allow messages to your other
+  sessions for 1 hour** instead of a person. SendMessage reaches only your own
+  sessions (this machine, Remote Control, cloud). Every message a room-started
+  turn sends to another session starts with a "[Relayed by Agent Chat …]" line
+  naming the room and the people behind it, so the session reading it treats it
+  as information, not as your instruction.
 - **Reads on a held turn stay in the project.** Plain reads (Read, Grep, Glob,
   LS) run unasked only inside the session's project folder. Reading anywhere
   else (other projects, `~/.claude` memory and settings, `~/.ssh`, cloud

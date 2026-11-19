@@ -133,9 +133,10 @@ test("inside a task: work runs, the owner's private data waits", async ($, on) =
   }
 })
 
-test('"Allow <person> for this session": turns only they start skip the hold; anyone else still asks', async ($, on) => {
+test('"Allow <person> for 1 hour": turns only they start skip the hold; anyone else still asks; after the hour it asks again', async ($, on) => {
   const st = engine(on)
-  const manthosh = { email: 'manthosh@facilio.com', name: 'Manthosh Kumar' }, shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  const hour = Date.now() + 3600_000
+  const manthosh = { email: 'manthosh@facilio.com', name: 'Manthosh Kumar', until: hour }, shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S', until: hour }
   st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [manthosh] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
   // someone else in the turn (or only someone else): held
@@ -149,12 +150,48 @@ test('"Allow <person> for this session": turns only they start skip the hold; an
   // /agent-chat hold on: nobody granted, held again
   st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // the hour is up: held again (the card comes back)
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [{ ...manthosh, until: Date.now() - 1 }] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // a grant stored before grants expired (no until): held, asks once more
+  st.seed(chatWith({ turnFrom: [manthosh], grantedPeople: [{ email: manthosh.email, name: manthosh.name }] }))
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+})
+
+test('"Allow messages to your other sessions for 1 hour": SendMessage on a held turn goes out unasked until then; nothing else does', async ($, on) => {
+  const st = engine(on)
+  const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  st.seed(chatWith({ turnFrom: [shiv], sendUntil: Date.now() + 3600_000 }))
+  expect(ran(await $.tool.call({ tool: 'SendMessage', to: 'agent-chat-58', message: 'hi' } as any))).toBe(true)
+  // the send grant covers SendMessage only
+  expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
+  // run out: held again
+  st.seed(chatWith({ turnFrom: [shiv], sendUntil: Date.now() - 1 }))
+  expect(ran(await $.tool.call({ tool: 'SendMessage', to: 'agent-chat-58', message: 'hi' } as any))).toBe(false)
+  // none: held
+  st.seed(chatWith({ turnFrom: [shiv] }))
+  expect(ran(await $.tool.call({ tool: 'SendMessage', to: 'agent-chat-58', message: 'hi' } as any))).toBe(false)
+})
+
+test('/agent-chat hold lists grants with the time left; hold on clears the people and the send grant', async ($, on) => {
+  const st = engine(on)
+  const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S', until: Date.now() + 42 * 60_000 }
+  st.seed(chatWith({ grantedPeople: [shiv, { email: 'old@facilio.com', name: 'Old Grant', until: Date.now() - 1 }], sendUntil: Date.now() + 10 * 60_000 }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'hold' } as any)
+  expect(String(r.text)).toMatch(/Shivaraj S \(@shiv\) · 42 min left/)
+  expect(String(r.text)).toMatch(/Messages to your other sessions · 10 min left/)
+  expect(String(r.text)).not.toMatch(/Old Grant/)
+  await $.command.run({ command: 'agent-chat', args: 'hold on' } as any)
+  const v: any = (st.get() as any).value
+  expect(v.grantedPeople).toEqual([])
+  expect(v.sendUntil).toBe(undefined)
 })
 
 test("a per-person grant lifts the tool hold only: reads outside the project and private data still wait", async ($, on) => {
   const st = engine(on)
   const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
-  st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [shiv] }))
+  st.seed(chatWith({ turnFrom: [shiv], grantedPeople: [{ ...shiv, until: Date.now() + 3600_000 }] }))
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'npm test' } as any))).toBe(true)
   expect(ran(await $.tool.call({ tool: 'Read', file_path: 'src/a.ts' } as any))).toBe(true)
   for (const input of [{ tool: 'Read', file_path: '/Users/me/other/notes.md' }, { tool: 'Read', file_path: '/Users/me/.claude/projects/p/memory/MEMORY.md' }, { tool: 'Bash', command: 'cat ~/.claude/CLAUDE.md' }, { tool: 'Read', file_path: '.env' }]) {
@@ -211,4 +248,22 @@ test("a reaction on a turn someone else started isn't held (one emoji, wakes nob
   expect(String(r.text ?? r.deny ?? '')).not.toMatch(/owner's OK/)
   const c: any = await $.tool.call({ tool: 'mcp__agent-chat__create_room', name: 'x' } as any)
   expect(String(c.text ?? c.deny ?? '')).toMatch(/NOT run/)
+})
+
+test('a message sent to another session on a room-started turn says first that it is relayed; the owner\'s own turn is not labelled', async ($, on) => {
+  const st = engine(on)
+  const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
+  const sent: string[] = []
+  on('session.send', (_: any, e: any) => { sent.push(String(e.text)); return { isDelivered: true } })
+  st.seed(chatWith({ tainted: true, turnFrom: [shiv], turnRooms: ['general'] }))
+  await ($.session as any).send({ to: 'agent-chat-58', text: 'please run the deploy' })
+  expect(sent[0]!.startsWith('[Relayed by Agent Chat: a room message from Shivaraj S in #general')).toBe(true)
+  expect(sent[0]!.endsWith('\n\nplease run the deploy')).toBe(true)
+  // already labelled: not twice
+  await ($.session as any).send({ to: 'agent-chat-58', text: sent[0] })
+  expect(sent[1]).toBe(sent[0])
+  // the owner's own turn: as written
+  st.seed(chatWith({ tainted: false }))
+  await ($.session as any).send({ to: 'agent-chat-58', text: 'hello' })
+  expect(sent[2]).toBe('hello')
 })

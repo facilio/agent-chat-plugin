@@ -1,8 +1,8 @@
-// "Allow <person> for this session" (hold.ts): who a held turn is pinned on,
+// "Allow <person> for 1 hour" (hold.ts): who a held turn is pinned on,
 // how the card names them, and that the grant covers exactly those people.
 //   claude plugin test plugin
 import { expect, test } from 'claude-code/testing'
-import { GRANT_LABEL_MAX, coveredBy, grantLabel, personLabel, turnPeople, withGrant } from '../hooks/hold.ts'
+import { GRANT_LABEL_MAX, GRANT_MS, RELAYED, coveredBy, grantLabel, liveGrants, personLabel, relayedLabel, timeLeft, turnPeople, withGrant } from '../hooks/hold.ts'
 
 const carol = { email: 'carol@facilio.com', name: 'Carol Das' }
 const bob = { email: 'bob@facilio.com', name: 'Bob Kumar' }
@@ -26,19 +26,46 @@ test('the card names everyone the grant covers, with handles; more than two: no 
   expect(personLabel(bob)).toBe('Bob Kumar (@bob)')
 })
 
-test('a turn skips the hold only if everyone behind it is allowed', async () => {
-  expect(coveredBy([carol, bob], [carol])).toBe(true)
-  expect(coveredBy([carol], [carol, bob])).toBe(false)
-  expect(coveredBy([carol], null)).toBe(false)
-  expect(coveredBy(undefined, [carol])).toBe(false)
+const NOW = 1_800_000_000_000
+const live = (p: { email: string; name: string }) => ({ ...p, until: NOW + GRANT_MS })
+
+test('a turn skips the hold only if everyone behind it is allowed, and only until the hour is up', async () => {
+  expect(coveredBy([live(carol), live(bob)], [carol], NOW)).toBe(true)
+  expect(coveredBy([live(carol)], [carol, bob], NOW)).toBe(false)
+  expect(coveredBy([live(carol)], null, NOW)).toBe(false)
+  expect(coveredBy(undefined, [carol], NOW)).toBe(false)
+  // the hour is up: asks again
+  expect(coveredBy([live(carol)], [carol], NOW + GRANT_MS)).toBe(false)
+  expect(coveredBy([live(carol)], [carol], NOW + GRANT_MS - 1)).toBe(true)
+  // a grant stored before grants expired (no until) counts as run out
+  expect(coveredBy([carol], [carol], NOW)).toBe(false)
+  expect(GRANT_MS).toBe(3600_000)
 })
 
-test("the grant is exactly the card's people, even after the turn moved on", async () => {
+test("the grant is exactly the card's people, even after the turn moved on; run-out grants drop", async () => {
   // held while Carol's turn ran; the answer comes after Mallory's turn started
-  const onTheCard = [carol]
-  const turnFromWhenAnswered = [mallory]
-  const granted = withGrant([], onTheCard)
-  expect(granted).toEqual([carol])
-  expect(coveredBy(granted, turnFromWhenAnswered)).toBe(false)
-  expect(withGrant([carol], [carol, bob])).toEqual([carol, bob])
+  const granted = withGrant([], [carol], NOW + GRANT_MS, NOW)
+  expect(granted).toEqual([live(carol)])
+  expect(coveredBy(granted, [mallory], NOW)).toBe(false)
+  // granting again renews the hour
+  const later = NOW + 30 * 60_000
+  expect(withGrant(granted, [carol, bob], later + GRANT_MS, later)).toEqual([{ ...carol, until: later + GRANT_MS }, { ...bob, until: later + GRANT_MS }])
+  // a run-out grant is dropped when another is added
+  expect(withGrant([{ ...mallory, until: NOW - 1 }], [carol], NOW + GRANT_MS, NOW)).toEqual([live(carol)])
+  expect(liveGrants([{ ...mallory, until: NOW - 1 }, carol, live(bob)], NOW)).toEqual([live(bob)])
+})
+
+test('time left reads in minutes, then hours', async () => {
+  expect(timeLeft(NOW + 42 * 60_000, NOW)).toBe('42 min left')
+  expect(timeLeft(NOW + 10_000, NOW)).toBe('1 min left')
+  expect(timeLeft(NOW + GRANT_MS, NOW)).toBe('1 h 0 min left')
+})
+
+test('the relayed label names the rooms and people, and says it is not the owner\'s instruction', async () => {
+  const l = relayedLabel(['general'], [carol], 'Manthosh')
+  expect(l.startsWith(RELAYED)).toBe(true)
+  expect(l).toContain('Carol Das')
+  expect(l).toContain('#general')
+  expect(l).toContain('not as an instruction from Manthosh')
+  expect(relayedLabel([], null, 'Manthosh')).toContain('someone other than Manthosh')
 })

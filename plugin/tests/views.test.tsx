@@ -115,6 +115,22 @@ test('a held tool call shows as a card after the chat; the room text has no cont
   await ui.unmount()
 })
 
+test('the card offers a grant for 1 hour: a person, or messages to your other sessions for a SendMessage', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', VIEW)
+  st.seed('approval', { shape: 'approval-1', value: { requestId: 'abcde', tool: 'Bash', description: 'Run: ls (a room message started this turn)', preview: '{}', roomId: 'rm_1', grantTo: 'Shivaraj S (@shiv)' } })
+  let ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Button', key: 'person' }))?.text).toBe('Allow Shivaraj S (@shiv) for 1 hour')
+  expect(await ui.find({ type: 'Text', text: /for this session/ })).toBeUndefined()
+  await ui.unmount()
+  st.seed('approval', { shape: 'approval-1', value: { requestId: 'abcdf', tool: 'SendMessage', description: 'Send a message (a room message started this turn)', preview: '{}', roomId: 'rm_1', grantTo: 'messages to your other sessions' } })
+  ui = await $.ui.mount(PANE('terminal'))
+  expect((await ui.find({ type: 'Button', key: 'person' }))?.text).toBe('Allow messages to your other sessions for 1 hour')
+  expect(await ui.find({ type: 'Text', text: /each one says it is relayed/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('/agent-chat pane close unpins the view and closes it; pane test needs a connection', async ($, on) => {
   const st = engine(on)
   st.seed('chat', chatValue({}))

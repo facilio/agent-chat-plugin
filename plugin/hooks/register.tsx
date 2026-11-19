@@ -23,7 +23,7 @@ import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec,
 import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
-import { OWNER_ACTS, READ_TOOLS, coveredBy, grantLabel, holdsOnTaintedTurn, personLabel, toolArgs, turnPeople, withGrant } from './hold.ts'
+import { GRANT_MS, OWNER_ACTS, READ_TOOLS, RELAYED, coveredBy, grantLabel, holdsOnTaintedTurn, liveGrants, personLabel, relayedLabel, timeLeft, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
@@ -72,7 +72,7 @@ const nonces = new Map<string, string>()
 let bridge: { socketPath: string; secret: string; stop: () => void } | null = null
 let starting: Promise<void> | null = null
 let busy = false
-const wakes: Array<{ text: string; trusted: boolean; from: Person[] | null }> = []
+const wakes: Array<{ text: string; trusted: boolean; from: Person[] | null; room?: string }> = []
 // Whether the current main turn was started by room messages (our own
 // $.prompt.submit) rather than by the person at the terminal or on Remote
 // Control. Only then do approvals go to the web: the person who typed the
@@ -324,7 +324,7 @@ async function onEvent($: $, ev: any) {
       // task: their words go to it verbatim ("stop" ends it), and the main
       // session isn't woken. Not when they're talking to someone else.
       if (ev.fromOwner && ev.addressed === true && ev.roomId && (await steerTask($, ev))) return
-      wakes.push({ text: ev.text, trusted: ev.trusted === true, from: Array.isArray(ev.from) ? ev.from : null })
+      wakes.push({ text: ev.text, trusted: ev.trusted === true, from: Array.isArray(ev.from) ? ev.from : null, room: ev.roomName ? String(ev.roomName) : undefined })
       if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
       return
@@ -348,10 +348,12 @@ async function flushWakes($: $) {
   busy = true
   roomTurn = true
   await setTainted($, batch.some(w => !w.trusted))
-  // the people behind this turn (for "Allow <person> for this session"); null
-  // if any untrusted part of it can't be pinned on people
+  // the people behind this turn (for "Allow <person> for 1 hour"); null if
+  // any untrusted part of it can't be pinned on people. Its rooms label a
+  // message this turn sends to another session (session.send).
   const from = turnPeople(batch)
-  await update($, chat, v => ({ ...v, turnFrom: from }))
+  const turnRooms = [...new Set(batch.filter(w => !w.trusted && w.room).map(w => w.room!))]
+  await update($, chat, v => ({ ...v, turnFrom: from, turnRooms }))
   for (const r of wakeRooms) setWorking($, r, true)
   wakeRooms.clear()
   await ensureToolsSoon($)
@@ -939,8 +941,11 @@ type Verdict = { decision: 'allow' | 'deny' | 'ask'; reason?: string; [k: string
 // against the hook's time budget. webOnlyOk: keep waiting on the web card when
 // no pane can be placed (Remote Control, headless); otherwise fall back to the
 // normal prompt.
-// Who a held turn's "Allow … for this session" would cover, as the card says it.
-const startedByGranted = (s: ChatState) => coveredBy(s.grantedPeople, s.turnFrom)
+// Who a held turn's "Allow … for 1 hour" would cover, as the card says it.
+const startedByGranted = (s: ChatState) => coveredBy(s.grantedPeople, s.turnFrom, Date.now())
+// "Allow messages to my sessions for 1 hour": SendMessage on a held turn goes out unasked
+const sendGranted = (s: ChatState) => (s.sendUntil ?? 0) > Date.now()
+const SEND_GRANT = 'messages to your other sessions'
 async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict; grantTo?: string; roomId?: string; post?: string }): Promise<any> {
   const ids = 'abcdefghijkmnopqrstuvwxyz'
   const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
@@ -1111,7 +1116,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
   /agent-chat pane close         close it (it opens again only when something needs your OK)
   /agent-chat pane test          a test approval in the pane and on the web; nothing is posted
-  /agent-chat hold [on]          who you allowed for this session; on = ask again for everyone
+  /agent-chat hold [on]          who you allowed, and how long each has left (an hour each); on = ask again for everyone
   /agent-chat review <on|off> [room|all]  every reply there waits for your OK (looks-private replies always do)
   /agent-chat update             fetch the newest Agent Chat (works over Remote Control), then /reload-plugins
   /agent-chat tasks              tasks running in subagents (work you gave or approved in a room)
@@ -1335,15 +1340,21 @@ async function command($: $, args: string): Promise<string> {
       return `Stopping ${hit.map(t => t.id).join(', ')}. The room sees it stop.`
     }
     case 'hold': {
-      // Undo "Allow for this session": ask again for each held action here.
+      // Undo the grants: ask again for each held action here.
       if (arg === 'on') {
-        await update($, chat, v => ({ ...v, grantedPeople: [] }))
-        return 'Asking again: actions in turns anyone else started wait for your OK, until you allow someone for this session on a card.'
+        await update($, chat, v => ({ ...v, grantedPeople: [], sendUntil: undefined }))
+        return 'Asking again: actions in turns anyone else started wait for your OK, until you allow someone on a card.'
       }
       const s = await read($, chat)
-      return s.grantedPeople?.length
-        ? `Allowed for this session: ${s.grantedPeople.map(personLabel).join(', ')} (turns only they or their agents start don't ask). Everyone else still asks. /agent-chat hold on to ask again.`
-        : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for this session" on a card stops asking for turns that person starts.'
+      const now = Date.now()
+      const live = liveGrants(s.grantedPeople, now)
+      const lines = [
+        ...live.map(g => `${personLabel(g)} · ${timeLeft(g.until!, now)} (turns only they or their agents start don't ask)`),
+        ...(sendGranted(s) ? [`Messages to your other sessions · ${timeLeft(s.sendUntil!, now)}`] : []),
+      ]
+      return lines.length
+        ? `Allowed:\n${lines.map(l => `  ${l}`).join('\n')}\nEveryone and everything else still asks; a grant asks again when its hour is up. /agent-chat hold on to ask again now.`
+        : 'Asking: each action in a turn someone else started waits for your OK. "Allow <person> for 1 hour" on a card stops asking for turns that person starts, for an hour.'
     }
     case 'quiet': {
       if (arg !== 'on' && arg !== 'off') {
@@ -1487,7 +1498,7 @@ export const register: Register = on => {
       } else {
         if (e.agentId && ((await read($, chat)).endedAgents ?? []).includes(e.agentId)) return notRun('This task has ended.')
         if (!(await isTainted($))) return next(e)
-        // Started only by people the owner allowed for this session: one
+        // Started only by people the owner allowed (for an hour): one
         // approval per person, not one per call. A grant lifts the tool hold
         // only: reads outside the project still wait (as on any held turn),
         // and so do commands that name the owner's private data (readscope.ts).
@@ -1502,10 +1513,14 @@ export const register: Register = on => {
           if (!outside) return next(e)
           why = `a room message started this turn, and ${outside}`
           privateHold = granted
+        } else if (e.tool === 'SendMessage' && sendGranted(await read($, chat))) {
+          // "Allow messages to my sessions": they reach only the owner's own
+          // sessions, and go out labelled as relayed (session.send).
+          return next(e)
         } else if (granted) {
           const priv = taskPrivateAccess(e.tool, toolArgs(e as any), root, home)
           if (!priv) return next(e)
-          why = `allowed for this session, but ${priv}`
+          why = `allowed for an hour, but ${priv}`
           privateHold = true
         }
       }
@@ -1514,6 +1529,9 @@ export const register: Register = on => {
       // The people this card names, taken now: an answer can arrive after the
       // turn moved on (a background subagent), and must grant exactly them.
       const people: Person[] = task || privateHold ? [] : ((await read($, chat)).turnFrom ?? [])
+      // A message to another session: the card offers the send grant instead
+      // of a person's (what it offered is fixed here, with the request).
+      const sendCard = !task && !privateHold && e.tool === 'SendMessage'
       const v = await holdForOwner($, e, next, {
         roomId: task?.roomId,
         description: `${describe(e.tool, args)} (${why})`,
@@ -1523,10 +1541,12 @@ export const register: Register = on => {
         onTimeout: { decision: 'deny', reason: 'Your owner did not answer within 10 minutes.' },
         onDeny: { decision: 'deny', reason: 'Your owner declined it.' },
         // only outside a task: inside one, acting as the owner always waits for them
-        grantTo: grantLabel(people) || undefined,
+        grantTo: sendCard ? SEND_GRANT : grantLabel(people) || undefined,
       })
       if (v.decision !== 'allow') return notRun(v.reason ?? 'Not allowed.')
-      if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people) }))
+      const until = Date.now() + GRANT_MS
+      if (v.person && sendCard) await update($, chat, x => ({ ...x, sendUntil: until }))
+      else if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people, until, Date.now()) }))
     } catch (err) { return notRun(`Agent Chat couldn't get your owner's OK (${(err as Error).message}).`) }
     if (e.tool_use_id) allowedCalls.add(e.tool_use_id)
     try { return await next(e) } finally { if (e.tool_use_id) allowedCalls.delete(e.tool_use_id) }
@@ -1730,11 +1750,13 @@ export const register: Register = on => {
               )}
             {a.post ? <Text dimColor wrap="wrap">{plain(a.description.replace(/^Post in #[^:]*: ".*" \(held because /s, 'Held because ').replace(/\)$/, ''))}</Text> : null}
             <Text dimColor>Also on your Agent Chat tab: the first answer wins.</Text>
-            {a.grantTo ? <Text dimColor wrap="wrap">{`Allow ${a.grantTo} for this session: turns they start run with your normal permissions, and can act on anything already in this session.`}</Text> : null}
+            {a.grantTo ? <Text dimColor wrap="wrap">{a.grantTo === SEND_GRANT
+              ? 'Allow messages to your other sessions for 1 hour: the agent can message them unasked while a room message drives it (each one says it is relayed). After the hour this card asks again.'
+              : `Allow ${a.grantTo} for 1 hour: turns they start run with your normal permissions, and can act on anything already in this session. After the hour this card asks again.`}</Text> : null}
             <Box flexDirection="row" flexWrap="wrap">
               <Button key="allow" variant="primary" onPress={answer('allow')}>{a.post ? 'Post it' : 'Allow once'}</Button>
               <Text> </Text>
-              {a.grantTo ? <Button key="person" onPress={answer('allow', 'person')}>{`Allow ${a.grantTo} for this session`}</Button> : null}
+              {a.grantTo ? <Button key="person" onPress={answer('allow', 'person')}>{`Allow ${a.grantTo} for 1 hour`}</Button> : null}
               {a.grantTo ? <Text> </Text> : null}
               <Button key="deny" autoFocus onPress={answer('deny')}>{a.post ? "Don't post" : 'Deny'}</Button>
               <Text> </Text>
@@ -1811,6 +1833,21 @@ export const register: Register = on => {
 
   // A compaction can drop the rules the model was given: send them again with
   // the next room message.
+  // A message the model sends to another session while a room message drives
+  // this turn carries a colleague's words: it says so first, so the session
+  // that reads it treats it as information, not as the owner's instruction.
+  // Every such send, granted, allowed once or under a person's grant.
+  on('session.send', async ($, e, next) => {
+    // the model's SendMessage (or another plugin's send on its behalf); not ours
+    const o = (e as any).origin
+    if ((o?.kind === 'plugin' && o.name === NAME) || !(await isTainted($))) return next(e)
+    if ((await taskForAgent($, (e as any).agentId))) return next(e)
+    const text = String((e as any).text ?? '')
+    if (text.startsWith(RELAYED)) return next(e)
+    const s = await read($, chat)
+    return next({ ...e, text: `${relayedLabel(s.turnRooms ?? [], s.turnFrom, ownerFirst())}\n\n${text}` })
+  })
+
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
     await update($, chat, v => ({ ...v, rulesShown: false }))
@@ -1864,7 +1901,7 @@ export const register: Register = on => {
       busy = false
       roomTurn = false
       await setTainted($, false)
-      await update($, chat, v => v.turnFrom ? { ...v, turnFrom: null } : v)
+      await update($, chat, v => v.turnFrom || v.turnRooms?.length ? { ...v, turnFrom: null, turnRooms: [] } : v)
       for (const r of [...workingRooms]) setWorking($, r, false)
       void flushWakes($)
       void maybeSummarize($).catch(() => {})
