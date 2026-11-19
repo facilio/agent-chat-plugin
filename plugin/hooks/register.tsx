@@ -1665,9 +1665,9 @@ export const register: Register = on => {
           if (!outside) return next(e)
           why = `a room message started this turn, and ${outside}`
           privateHold = granted
-        } else if (e.tool === 'SendMessage' && sendGranted(await read($, chat))) {
-          // "Allow messages to my sessions": they reach only the owner's own
-          // sessions, and go out labelled as relayed (session.send).
+        } else if (e.tool === 'SendMessage') {
+          // A message to another session waits in session.send (its card
+          // offers "Allow messages to your other sessions"), labelled there.
           return next(e)
         } else if (granted) {
           const priv = taskPrivateAccess(e.tool, toolArgs(e as any), root, home)
@@ -1681,9 +1681,6 @@ export const register: Register = on => {
       // The people this card names, taken now: an answer can arrive after the
       // turn moved on (a background subagent), and must grant exactly them.
       const people: Person[] = task || privateHold ? [] : ((await read($, chat)).turnFrom ?? [])
-      // A message to another session: the card offers the send grant instead
-      // of a person's (what it offered is fixed here, with the request).
-      const sendCard = !task && !privateHold && e.tool === 'SendMessage'
       const v = await holdForOwner($, e, next, {
         roomId: task?.roomId,
         description: `${describe(e.tool, args)} (${why})`,
@@ -1693,12 +1690,11 @@ export const register: Register = on => {
         onTimeout: { decision: 'deny', reason: 'Your owner did not answer within 10 minutes.' },
         onDeny: { decision: 'deny', reason: 'Your owner declined it.' },
         // only outside a task: inside one, acting as the owner always waits for them
-        grantTo: sendCard ? SEND_GRANT : grantLabel(people) || undefined,
+        grantTo: grantLabel(people) || undefined,
       })
       if (v.decision !== 'allow') return notRun(v.reason ?? 'Not allowed.')
       const until = Date.now() + GRANT_MS
-      if (v.person && sendCard) await update($, chat, x => ({ ...x, sendUntil: until }))
-      else if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people, until, Date.now()) }))
+      if (v.person && people.length) await update($, chat, x => ({ ...x, grantedPeople: withGrant(x.grantedPeople, people, until, Date.now()) }))
     } catch (err) { return notRun(`Agent Chat couldn't get your owner's OK (${(err as Error).message}).`) }
     if (e.tool_use_id) allowedCalls.add(e.tool_use_id)
     try { return await next(e) } finally { if (e.tool_use_id) allowedCalls.delete(e.tool_use_id) }
@@ -1771,6 +1767,9 @@ export const register: Register = on => {
     // answers an ask, never a settings rule's deny.
     if (e.tool_use_id && allowedCalls.has(e.tool_use_id)) return verdict.decision === 'ask' ? { decision: 'allow' as const, reason: 'Allowed by the owner (Agent Chat)' } : verdict
     if (verdict.decision !== 'ask' || verdict.plugin || e.approver !== 'person' || !e.tool_use_id) return verdict
+    // SendMessage on a turn someone else started waits in session.send, with
+    // its own card (and grant): no second prompt for the same message here.
+    if (e.tool === 'SendMessage' && roomTurn && (await isTainted($)) && !(e.agentId && (await taskForAgent($, e.agentId)))) return { decision: 'allow' as const, reason: 'Held for the owner in Agent Chat when it is sent' }
     const s = await read($, chat)
     if (!bridge || !s.joined.length || lastStatus?.state !== 'online') return verdict
     if (!roomTurn || (await $.store.get('paneOff')) === true) return verdict
@@ -2003,18 +2002,38 @@ export const register: Register = on => {
   // A compaction can drop the rules the model was given: send them again with
   // the next room message.
   // A message the model sends to another session while a room message drives
-  // this turn carries a colleague's words: it says so first, so the session
-  // that reads it treats it as information, not as the owner's instruction.
-  // Every such send, granted, allowed once or under a person's grant.
+  // this turn carries a colleague's words. It waits for the owner like any
+  // other action on such a turn (the SendMessage tool never reaches tool.call,
+  // so the hold is here): the card offers "Allow messages to your other
+  // sessions for 1 hour". Once it may go, it says first that it is relayed, so
+  // the session that reads it treats it as information, not as the owner's
+  // instruction: granted, allowed once or under a person's grant.
   on('session.send', async ($, e, next) => {
     // the model's SendMessage (or another plugin's send on its behalf); not ours
     const o = (e as any).origin
     if ((o?.kind === 'plugin' && o.name === NAME) || !(await isTainted($))) return next(e)
     if ((await taskForAgent($, (e as any).agentId))) return next(e)
     const text = String((e as any).text ?? '')
-    if (text.startsWith(RELAYED)) return next(e)
     const s = await read($, chat)
-    return next({ ...e, text: `${relayedLabel(s.turnRooms ?? [], s.turnFrom, ownerFirst())}\n\n${text}` })
+    const labelled = () => text.startsWith(RELAYED) ? e : { ...e, text: `${relayedLabel(s.turnRooms ?? [], s.turnFrom, ownerFirst())}\n\n${text}` }
+    if (sendGranted(s) || startedByGranted(s)) return next(labelled())
+    const notSent = (reason: string) => ({ isDelivered: false, reason: `${reason} It was NOT sent.` })
+    if (!bridge || lastStatus?.state !== 'online') return notSent("This needs your owner's OK (a room message started this turn), and Agent Chat isn't connected to ask.")
+    try {
+      const to = String((e as any).to ?? '')
+      const v = await holdForOwner($, { tool: 'SendMessage' }, next, {
+        description: `Send a message to ${to || 'another session'} (a room message started this turn)`,
+        preview: JSON.stringify({ to, message: text.slice(0, 2000) }, null, 1),
+        webOnlyOk: true,
+        onTerminal: { decision: 'deny', reason: 'Your owner chose to handle this in the terminal. Ask them there.' },
+        onTimeout: { decision: 'deny', reason: 'Your owner did not answer within 10 minutes.' },
+        onDeny: { decision: 'deny', reason: 'Your owner declined it.' },
+        grantTo: SEND_GRANT,
+      })
+      if (v.decision !== 'allow') return notSent(v.reason ?? 'Not allowed.')
+      if (v.person) await update($, chat, x => ({ ...x, sendUntil: Date.now() + GRANT_MS }))
+    } catch (err) { return notSent(`Agent Chat couldn't get your owner's OK (${(err as Error).message}).`) }
+    return next(labelled())
   })
 
   on('session.compact', async ($, e, next) => {
