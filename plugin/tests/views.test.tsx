@@ -200,83 +200,32 @@ test('a request waiting alongside a held tool call: both show, the tool call fir
   await ui.unmount()
 })
 
-// Quiet mode. Off unless turned on; kept in $.store for every session.
-test('/agent-chat quiet on|off is kept across sessions and starts off', async ($, on) => {
+// Quiet is how the bridge always works now: no command, and nothing hidden in the transcript.
+test("no quiet command; a room turn's react row and its result lines always draw", async ($, on) => {
   const st = engine(on)
+  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   st.seed('chat', chatValue({}))
   on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
   const run = async (args: string) => String(((await $.command.run({ command: 'agent-chat', args } as any)) as any).text)
-  expect(await run('quiet')).toMatch(/^quiet: off/)
-  expect(await run('quiet on')).toMatch(/^Quiet on/)
-  expect(st.store.get('quiet')).toBe(true)
-  expect(await run('quiet')).toMatch(/^quiet: on/)
-  expect(await run('quiet off')).toMatch(/^Quiet off/)
-  expect(st.store.get('quiet')).toBe(false)
-  expect(await run('help')).toMatch(/\/agent-chat quiet <on\|off>/)
-})
-
-// Quiet mode: a room turn's react rows and result lines aren't drawn.
-const ROOM_ROWS = (calls: string[]) => ({ shape: 'roomRows-1', value: { calls } })
-test("quiet: a room turn's react rows and result lines aren't drawn; ctrl+o shows them; its text is", async ($, on) => {
-  const st = engine(on)
-  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
-  st.seed('chat', chatValue({}))
-  st.seed('roomRows', ROOM_ROWS(['toolu_room']))
-  const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
-  // the agent's own text is drawn: it is nowhere else, and ctrl+o can't bring a text row back
-  let ui = await $.ui.mount(said('I added a 👍 to "this is really interesting".'))
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  expect(await run('help')).not.toMatch(/quiet/)
+  const call = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: 'toolu_room',
+    props: { tool_use_id: 'toolu_room', tool: 'mcp__agent-chat__react', input: { room_id: 'rm_1', emoji: '👍' }, isRunning: false, isErrored: false, isInterrupted: false } } as any
+  let ui = await $.ui.mount(call)
+  expect(await ui.find({ type: 'Text', text: /^👍 Reacted in #general$/ })).toBeDefined()
   await ui.unmount()
-  const call = (id: string, isExpanded = false) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: id,
-    props: { tool_use_id: id, tool: 'mcp__agent-chat__react', input: { room_id: 'rm_1', emoji: '👍' }, isRunning: false, isErrored: false, isInterrupted: false, isExpanded } }) as any
-  ui = await $.ui.mount(call('toolu_room'))
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
-  await ui.unmount()
-  const result = (id: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: id, props: { tool_use_id: id, tool: 'mcp__agent-chat__react', output: 'reacted 👍', isErrored: false } }) as any
+  const result = (id: string, o: Record<string, unknown> = {}) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: id, props: { tool_use_id: id, tool: 'mcp__agent-chat__react', output: 'reacted 👍', isErrored: false, ...o } }) as any
+  // own reply/react results draw gray; ctrl+o, an error or another tool's result is the engine's
   ui = await $.ui.mount(result('toolu_room'))
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
-  await ui.unmount()
-  // the result line of a call that isn't a quiet room turn's is drawn (gray, in the default style)
-  ui = await $.ui.mount(result('toolu_mine'))
   expect((await ui.find({ type: 'Text' }))?.text).toBe('⎿  reacted 👍')
   await ui.unmount()
-  ui = await $.ui.mount({ ...result('toolu_err'), props: { ...result('toolu_err').props, isErrored: true } })
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
-  ui = await $.ui.mount({ ...result('toolu_bash'), props: { ...result('toolu_bash').props, tool: 'Bash' } })
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
-  for (const c of [call('toolu_room', true), call('toolu_mine')]) {
-    ui = await $.ui.mount(c)
-    expect(await ui.find({ type: 'Text', text: /^👍 Reacted in #general$/ })).toBeDefined()
-    await ui.unmount()
-  }
-  // ctrl+o brings back the hidden result line
-  ui = await $.ui.mount({ ...result('toolu_room'), props: { ...result('toolu_room').props, isExpanded: true } })
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
-})
-
-test("quiet: a reply keeps its ↗️ line; a value stored by an earlier build (texts, own) hides no text", async ($, on) => {
-  const st = engine(on)
-  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
-  st.seed('chat', chatValue({}))
-  st.seed('roomRows', { shape: 'roomRows-1', value: { texts: ['Done.', 'Posted the summary.'], calls: ['toolu_reply'], own: ['Done.'] } })
-  const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
-  for (const t of ['Done.', 'Posted the summary.']) {
-    const ui = await $.ui.mount(said(t))
+  for (const o of [{ isExpanded: true }, { isErrored: true }, { tool: 'Bash' }]) {
+    ui = await $.ui.mount(result('toolu_x', o))
     expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
     await ui.unmount()
   }
-  let ui
-  const reply = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: 'toolu_reply',
-    props: { tool_use_id: 'toolu_reply', tool: 'mcp__agent-chat__reply', input: { room_id: 'rm_1', text: 'Posted the summary.' }, isRunning: false, isErrored: false, isInterrupted: false } } as any
-  ui = await $.ui.mount(reply)
-  expect(await ui.find({ type: 'Text', text: /^↗️ #general · @agent ›$/ })).toBeDefined()
-  await ui.unmount()
-  const sent = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: 'toolu_reply', props: { tool_use_id: 'toolu_reply', tool: 'mcp__agent-chat__reply', output: 'sent', isErrored: false } } as any
-  ui = await $.ui.mount(sent)
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  // the agent's own text is the engine's row
+  ui = await $.ui.mount({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text: 'Done.', isFirstOfReply: true } } as any)
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
   await ui.unmount()
 })
 

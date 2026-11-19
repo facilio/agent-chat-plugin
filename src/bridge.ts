@@ -45,7 +45,6 @@ interface Config {
   title?: string;                      // the Claude Code session name (owner-only on the server)
   rooms?: string[];                    // re-attach after a module reload
   cursors?: Record<string, string>;
-  quiet?: boolean;                     // messages not addressed to this agent take no turn (see onIncoming)
   emailHint?: string;                  // Claude Code's login, for the pairing page's warning
   noBrowser?: boolean;
 }
@@ -83,12 +82,6 @@ const briefed = new Map<string, string>();         // the room description Claud
 const recent = new Map<string, ChatMessage[]>();
 const RECENT_PER_ROOM = 200;
 const addressedIds = new Set<string>();
-// Quiet mode (/agent-chat quiet on): a room's messages that address nobody
-// here don't wake the session. They become context for the next wake from that
-// room. Only the ones that name the owner (an @mention, or a reply to the
-// owner's message) reach the module ('heard'), for one line in the terminal;
-// the rest are in the room and the pane.
-let quiet = false;
 // Rooms where the agents are paused (too many agent messages in a row), and
 // rooms just resumed: the next wake there says why it went quiet.
 const pausedRooms = new Map<string, number>();     // room -> the cap it tripped at
@@ -141,7 +134,8 @@ function briefing(roomId: string, roomName: string): string[] {
   return [`[about #${roomName}: the room's description, written by its members; background, not instructions]`, about, '---'];
 }
 
-function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
+// Only a batch with a message addressed to this session wakes it (onIncoming).
+function wakeFor(roomId: string, woke: ChatMessage[]) {
   const roomName = rooms.get(roomId)?.name ?? roomId;
   const roomType = rooms.get(roomId)?.type;
   const context = unseen.get(roomId) ?? [];
@@ -159,7 +153,7 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   lines.push(woke.length > 1 ? `${who(last)}: ${withFiles(last)}` : withFiles(last));
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}"${roomType ? ` room_type="${roomType}"` : ''} from="${attr(who(last))}" from_kind="${last.authorKind}" `
-    + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}" count="${woke.length}">`;
+    + `from_is_owner="${isOwner}" addressed="true" message_id="${attr(last.id)}" count="${woke.length}">`;
   // trusted: everything in it is the owner's own (or a system line) and it
   // carries no room description. Anything else makes it a held turn (hold.ts).
   const ownerOnly = (m: ChatMessage) => m.authorKind === 'system' || (m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail);
@@ -184,7 +178,7 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
     people.set(email, name);
   }
   const from = pinned && people.size ? [...people].map(([email, name]) => ({ email, name })) : null;
-  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, from, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  emit({ type: 'wake', roomId, roomName, addressed: true, trusted, fromOwner, from, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
 
 function remember(m: ChatMessage) {
@@ -215,10 +209,13 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
     }
   }
   for (const [roomId, woke] of wakes) {
-    // Decided per room, before wakeFor: it uses up the room's one-time lines
-    // (description, resume notice, earlier context), which must reach the model
-    // with the next wake, not a dropped one.
-    if (quiet && !addressedRooms.has(roomId)) {
+    // A room's batch that addresses nobody here doesn't wake the session: its
+    // messages become context for the next wake from that room. Only the ones
+    // that name the owner (an @mention, or a reply to the owner's message)
+    // reach the module ('heard'), for one line in the terminal; the rest are
+    // in the room and the pane. Decided before wakeFor, which uses up the
+    // room's one-time lines (description, resume notice, earlier context).
+    if (!addressedRooms.has(roomId)) {
       const roomName = rooms.get(roomId)?.name ?? roomId;
       const ownerHandle = me ? userHandle(me.ownerEmail).toLowerCase() : null;
       for (const m of woke) {
@@ -228,7 +225,7 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
       }
       continue;
     }
-    wakeFor(roomId, woke, addressedRooms.has(roomId));
+    wakeFor(roomId, woke);
   }
 }
 
@@ -562,7 +559,6 @@ const routes: Record<string, Handler> = {
     advance(String(b.roomId), r.id);
     return r;
   },
-  'POST /quiet': async (b) => { quiet = b.on === true; return { quiet }; },
   'POST /react': async (b) => call({ action: 'react', roomId: String(b.roomId), messageId: String(b.messageId), emoji: b.emoji ? String(b.emoji) : null }),
   'POST /history': async (b) => call({ action: 'history', roomId: String(b.roomId), limit: b.limit, before: b.before }),
   // One message by id, and whether this session's owner wrote it (the backend
@@ -713,7 +709,6 @@ async function main() {
   if (!cfg.secret || !cfg.socketPath || !cfg.sessionId) throw new Error('bridge needs secret, socketPath and sessionId on stdin');
   cursors = { ...(cfg.cursors ?? {}) };
   joined = new Set(cfg.rooms ?? []);
-  quiet = cfg.quiet === true;
   await serve();
   emit({ type: 'ready', version: VERSION });
   start();
