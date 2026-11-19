@@ -188,6 +188,48 @@ test('a pane message draws bold italic, strikethrough and a table as columns; a 
   await ui.unmount()
 })
 
+// pane view <room> joins a room this session isn't in, once; a room it's in, never.
+// A fake bridge: the process says ready, and its HTTP answers are canned.
+function fakeBridge(on: any) {
+  const calls: { method: string; path: string; body: any }[] = []
+  on('process.spawn', async function* () { yield { stream: 'stdout', text: JSON.stringify({ type: 'ready' }) + '\n' }; await new Promise(() => {}) } as any)
+  on('http.fetch', (_: any, e: any) => {
+    const path = new URL(e.url).pathname
+    const method = e.init?.method ?? 'GET'
+    const body = e.init?.body ? JSON.parse(e.init.body) : undefined
+    calls.push({ method, path, body })
+    const answer: any =
+      path === '/status' ? { state: 'online', me: { name: 'caraxes', ownerEmail: 'seenimohamed@example.com' } }
+      : path === '/join' ? { id: 'rm_2', name: 'agent-chat-enhancements', members: [] }
+      : path === '/history' ? []
+      : {}
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answer) } }
+  })
+  on('session.id', () => ({ value: 'cc1' }))
+  on('session.identity', () => ({ value: { email: 'seenimohamed@example.com' } }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  on('tool.list', () => ({ value: [] }))
+  on('tool.register', (_: any, e: any) => ({ value: { tool: `mcp__agent-chat__${e.name}` } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.scroll', () => ({ value: { offset: 0 } }))
+  on('clock.sleep', () => ({ value: undefined }))
+  return calls
+}
+test('/agent-chat pane view <room> joins a room this session is not in, once; a room it is in, never', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const calls = fakeBridge(on)
+  const run = async (args: string) => String(((await $.command.run({ command: 'agent-chat', args } as any)) as any).text)
+  const joins = () => calls.filter(c => c.path === '/join')
+  expect(await run('pane view agent-chat-enhancements')).toMatch(/^Joined #agent-chat-enhancements /)
+  expect(joins()).toEqual([{ method: 'POST', path: '/join', body: { room: 'agent-chat-enhancements' } }])
+  expect(st.get('chat').joined).toEqual(['rm_1', 'rm_2'])
+  // now in it, and in #general from the start: no join either time
+  expect(await run('pane view agent-chat-enhancements')).toMatch(/^Showing #agent-chat-enhancements /)
+  expect(await run('pane view general')).toMatch(/^Showing #general /)
+  expect(joins()).toHaveLength(1)
+})
+
 test('/agent-chat pane close unpins the view and closes it; pane test needs a connection', async ($, on) => {
   const st = engine(on)
   st.seed('chat', chatValue({}))
