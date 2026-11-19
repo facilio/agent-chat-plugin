@@ -262,7 +262,8 @@ function connect(token: string) {
   let ping: NodeJS.Timeout | null = null;
 
   sock.on('open', () => {
-    backoff = 1000;
+    // backoff resets at hello, not here: a server that keeps refusing the
+    // registration must not be retried every second.
     // API Gateway closes sockets idle for 10 minutes.
     ping = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send('{"action":"ping"}'), 4 * 60_000);
     sock.send(JSON.stringify({
@@ -304,6 +305,7 @@ function connect(token: string) {
           if (!cursors[r.id]) advance(r.id, nowCursor());
         }
         state = 'online';
+        backoff = 1000;
         onIncoming(f.missed);
         for (const [id, p] of pendingPerms) {
           if (Date.now() - p.at > PENDING_TTL_MS) { pendingPerms.delete(id); continue; }
@@ -314,6 +316,11 @@ function connect(token: string) {
         break;
       }
       case 'error':
+        // The server lost this socket's registration (its row was swept while
+        // the socket stayed up). Not fatal: drop the socket and reconnect, which
+        // registers it again. Stopping here left the session offline until a
+        // manual /agent-chat connect.
+        if (f.code === 'no_session') { log('connection not registered; reconnecting'); sock.terminate(); break; }
         if (reqId === 'hello') { stopped = f.message; state = 'stopped'; status(f.message); }
         break;
       case 'message':
