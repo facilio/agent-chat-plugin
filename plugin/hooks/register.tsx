@@ -1282,8 +1282,18 @@ async function command($: $, args: string): Promise<string> {
       // Its tasks there can't report any more: stop them first.
       for (const t of await readTasks($)) if (!roomId || t.roomId === roomId) await stopTask($, t, 'left the room')
       const r = await bridgeCall($, 'POST', '/leave', { roomId })
-      const left = (await read($, chat)).joined.length
-      if (!left) { bridge?.stop(); bridge = null; $.ui.status(undefined); await $.ui.close({ id: PANE }).catch(() => {}) }
+      // the rooms still joined, from the answer (chat state catches up with the
+      // bridge's next status, a moment later)
+      const gone = new Set<string>(r.left.map((x: any) => String(x.id)))
+      const after = s.joined.filter(id => !gone.has(id))
+      // The pane showed a room this session left: forget it, and close the
+      // pane unless an answer waits there.
+      const shown = (await read($, view))?.roomId
+      if (shown && !after.includes(shown)) {
+        await update($, view, () => null)
+        if (!(await read($, approval)) && !(await liveAsks($)).length) await $.ui.close({ id: PANE }).catch(() => {})
+      }
+      if (!after.length) { bridge?.stop(); bridge = null; $.ui.status(undefined); await $.ui.close({ id: PANE }).catch(() => {}) }
       return `Left ${r.left.map((x: any) => `#${x.name}`).join(', ')}.`
     }
     case 'rooms':
@@ -1514,7 +1524,9 @@ async function command($: $, args: string): Promise<string> {
           if (!find()) return j
           joinedNow = true
         }
-        const roomId = find() ?? (await read($, view))?.roomId ?? s.joined[0]
+        // bare: the room last shown, if this session is still in it
+        const last = (await read($, view))?.roomId
+        const roomId = find() ?? (last && s.joined.includes(last) ? last : s.joined[0])
         await loadView($, roomId, true)
         // The room view sits on the terminal's own background, so the messages
         // read like the transcript; an approval pane keeps the engine's gray.
