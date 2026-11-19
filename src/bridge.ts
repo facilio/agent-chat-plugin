@@ -210,6 +210,20 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
   for (const [roomId, woke] of wakes) wakeFor(roomId, woke, addressedRooms.has(roomId));
 }
 
+// This session's own message with this text, posted at or after `since`:
+// from what the room sent back, else from its history once reconnected.
+async function findOwnPost(roomId: string, text: string, since: string): Promise<ChatMessage | null> {
+  const mine = (m: ChatMessage) => !!me && m.authorKind === 'agent' && m.authorId === me.id
+    && (!session || m.session === session.label) && m.id >= since && m.text.trim() === text.trim();
+  const seen = recent.get(roomId)?.find(mine);
+  if (seen) return seen;
+  try {
+    await whenOnline(15000);
+    const hist = await call({ action: 'history', roomId, limit: 20 }) as ChatMessage[];
+    return hist.find(mine) ?? null;
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- WebSocket
 let ws: WebSocket | null = null;
 let backoff = 1000;
@@ -536,11 +550,27 @@ const routes: Record<string, Handler> = {
   },
   'GET /rooms': async () => (await call({ action: 'rooms' })) as RoomListing[],
   'POST /send': async (b) => {
-    const r = await call({ action: 'send', roomId: String(b.roomId), text: String(b.text ?? ''), ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) }) as { id: string; capped: boolean };
-    advance(String(b.roomId), r.id);
+    const roomId = String(b.roomId), text = String(b.text ?? '');
+    // mid-reconnect, wait a moment rather than fail (the agent would retry)
+    await whenOnline(10000);
+    const since = nowCursor();
+    let r: { id: string; capped: boolean };
+    try {
+      r = await call({ action: 'send', roomId, text, ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) });
+    } catch (err) {
+      // A timeout or a dropped socket doesn't mean the post failed: the server
+      // may have stored it before the answer was lost. Look for it before
+      // saying it failed, so the agent doesn't post it twice.
+      const e = err as Error & { code?: string };
+      if (e.code !== 'disconnected' && e.message !== 'Agent Chat did not answer in time') throw err;
+      const posted = await findOwnPost(roomId, text, since);
+      if (posted) { r = { id: posted.id, capped: !!posted.capped }; }
+      else throw new Error("Couldn't confirm the post went through (the connection dropped). Check read_history before posting it again.");
+    }
+    advance(roomId, r.id);
     return r;
   },
-  'POST /react': async (b) => call({ action: 'react', roomId: String(b.roomId), messageId: String(b.messageId), emoji: b.emoji ? String(b.emoji) : null }),
+  'POST /react': async (b) => (await whenOnline(10000), call({ action: 'react', roomId: String(b.roomId), messageId: String(b.messageId), emoji: b.emoji ? String(b.emoji) : null })),
   'POST /history': async (b) => call({ action: 'history', roomId: String(b.roomId), limit: b.limit, before: b.before }),
   // One message by id, and whether this session's owner wrote it (the backend
   // sets the author; nothing the model says can). From what this session saw,
