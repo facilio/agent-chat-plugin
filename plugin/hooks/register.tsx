@@ -20,7 +20,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec, PaneAsk } from '../types'
-import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
+import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
@@ -1075,7 +1075,7 @@ const VIEW_LIMIT = 40
 // Plain text for the terminal: no control characters (a room message could
 // carry escape sequences), newlines kept.
 const plain = (t: unknown) => String(t ?? '').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, '')
-async function loadView($: $, roomId: string, pin?: boolean): Promise<void> {
+async function loadView($: $, roomId: string, pin?: boolean, name?: string): Promise<void> {
   const msgs = await bridgeCall<any[]>($, 'POST', '/history', { roomId, limit: VIEW_LIMIT })
   const me = lastStatus?.me?.ownerEmail
   // Sessions coming and going ("@odin joined from repo:branch:host", "… (label)
@@ -1090,9 +1090,11 @@ async function loadView($: $, roomId: string, pin?: boolean): Promise<void> {
     ts: Number(m.ts),
     reactions: m.reactions?.length ? reactionLine(m.reactions) : undefined,
   }))
-  const roomName = (await read($, chat)).roomNames[roomId] ?? roomId
+  const s = await read($, chat)
+  // a room the owner is in that this session hasn't joined: shown read-only
+  const watching = !s.joined.includes(roomId) || undefined
   const agents = [...new Set(msgs.filter(m => m.authorKind === 'agent').map(m => String(m.authorName).toLowerCase()))]
-  await update($, view, v => ({ roomId, roomName, messages, agents, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
+  await update($, view, v => ({ roomId, roomName: s.roomNames[roomId] ?? name ?? (v?.roomId === roomId ? v.roomName : roomId), messages, agents, watching, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
   void paneToEnd($)
 }
 function reactionLine(rx: any[]): string {
@@ -1101,6 +1103,25 @@ function reactionLine(rx: any[]): string {
   return [...by].map(([e, n]) => n > 1 ? `${e} ${n}` : e).join('  ')
 }
 const paneToEnd = ($: $) => $.ui.scroll({ in: PANE, to: 'end' }).catch(() => {})
+// A room shown read-only (not joined) gets no live messages: the server pushes
+// only to sessions that joined. Its newest message is checked every few
+// seconds while the pane shows it, and the view fetched again when it moved.
+// Never a turn: the model sees none of it.
+const WATCH_EVERY_MS = 7000
+let watchTimer: { cancel: () => void } | null = null
+function stopWatching() { watchTimer?.cancel(); watchTimer = null }
+function startWatching($: $, roomId: string) {
+  stopWatching()
+  watchTimer = $.clock.every(WATCH_EVERY_MS, () => { void (async () => {
+    const v = await read($, view)
+    const open = (await $.ui.panes().catch(() => [])).some(p => p.id === PANE)
+    if (!v || v.roomId !== roomId || !v.watching || !open) { stopWatching(); return }
+    const newest = await bridgeCall<any[]>($, 'POST', '/history', { roomId, limit: 1 }).catch(() => null)
+    const last = v.messages[v.messages.length - 1]?.id
+    if (newest?.length && String(newest[newest.length - 1].id) !== last) await loadView($, roomId)
+  })().catch(() => {}) })
+}
+
 // New messages in the room the pane shows: fetch again (at most every 2 s).
 let viewTimer: { cancel: () => void } | null = null
 function viewChanged($: $, roomId: string) {
@@ -1213,7 +1234,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat pane               open the room chat in a pane, or close it (a toggle)
   /agent-chat quiet <on|off>     on: room messages aimed elsewhere (another @mention, agent chatter) take no turn; only those naming you show, as one line
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
-  /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
+  /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message); a room of yours this session hasn't joined shows read-only
   /agent-chat pane close         close it (it opens again only when something needs your OK)
   /agent-chat pane test          a test approval in the pane and on the web; nothing is posted
   /agent-chat hold [on]          who you allowed, and how long each has left (an hour each); on = ask again for everyone
@@ -1513,22 +1534,36 @@ async function command($: $, args: string): Promise<string> {
       }
       if (arg === 'view' || arg.startsWith('view ')) {
         const s = await read($, chat)
-        if (!s.joined.length) return 'Not in a room. /agent-chat join <room>'
         const want = arg.slice(4).trim().replace(/^#/, '').toLowerCase()
-        // bare: the room last shown, if this session is still in it. Joining
-        // stays /agent-chat join's alone: viewing a room never joins it.
+        if (!want && !s.joined.length) return 'Not in a room. /agent-chat join <room>, or /agent-chat pane view <room> to read one of your rooms'
+        // bare: the room last shown, if this session is still in it.
         const last = (await read($, view))?.roomId
-        const roomId = want
+        let roomId = want
           ? s.joined.find(id => id === want || (s.roomNames[id] ?? '').toLowerCase() === want)
           : (last && s.joined.includes(last) ? last : s.joined[0])
-        if (!roomId) return `Not in #${want} from this session. Join it first: /agent-chat join ${want}   (in: ${s.joined.map(id => `#${s.roomNames[id] ?? id}`).join(' ')})`
-        await loadView($, roomId, true)
+        // A room this session hasn't joined: shown read-only when the owner and
+        // their agent are in it. Viewing never joins: no /join, no change to
+        // the joined rooms, nothing wakes this session.
+        let name = roomId ? s.roomNames[roomId] ?? roomId : want
+        if (!roomId) {
+          const rooms = await bridgeCall<RoomListing[]>($, 'GET', '/rooms').catch(() => null)
+          if (!rooms) return `Can't reach Agent Chat to find #${want}. /agent-chat status`
+          const room = rooms.find(x => x.agentMember && (x.id === want || x.name.toLowerCase() === want))
+          if (!room) return `Not in #${want}. /agent-chat join ${want} first.`
+          roomId = room.id
+          name = room.name
+        }
+        await loadView($, roomId, true, name)
+        const watching = !s.joined.includes(roomId)
         // The room view sits on the terminal's own background, so the messages
         // read like the transcript; an approval pane keeps the engine's gray.
-        const r = await $.ui.open({ id: PANE, title: `#${s.roomNames[roomId] ?? roomId}`, focus: true, rows: PANE_ROWS, backgroundColor: 'transparent' }).catch(() => ({ isPlaced: false }))
-        if (!r.isPlaced) return 'The pane has no room to open here (it needs a wider terminal, and there is none over Remote Control). The room is at https://chat.facilio.bot.'
+        const r = await $.ui.open({ id: PANE, title: `#${name}${watching ? ' · viewing (not joined)' : ''}`, focus: true, rows: PANE_ROWS, backgroundColor: 'transparent' }).catch(() => ({ isPlaced: false }))
+        if (!r.isPlaced) { stopWatching(); return 'The pane has no room to open here (it needs a wider terminal, and there is none over Remote Control). The room is at https://chat.facilio.bot.' }
+        if (watching) startWatching($, roomId); else stopWatching()
         void paneToEnd($)
-        return `Showing #${s.roomNames[roomId] ?? roomId} in the pane. Close it with Esc or ctrl+x x.`
+        return watching
+          ? `Showing #${name} in the pane, read-only: this session hasn't joined it, so its messages don't reach the agent. Close it with Esc or ctrl+x x.`
+          : `Showing #${name} in the pane. Close it with Esc or ctrl+x x.`
       }
       return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane [on|off|view [room]|close|test]; bare pane toggles)`
     }
@@ -1868,7 +1903,7 @@ export const register: Register = on => {
     const canClose = !!v && !a && !pending.length && (e.props as any).placement !== 'inline' && (e.props as any).placement !== 'widget'
     return (
       <Box flexDirection="column">
-        <Text bold>{room}{v?.pinned && !a && !pending.length ? '' : ' · approval needed'}</Text>
+        <Text bold>{room}{v?.watching ? ' · viewing (not joined)' : ''}{v?.pinned && !a && !pending.length ? '' : ' · approval needed'}</Text>
         <Text> </Text>
         {rows}
         {a ? (
@@ -1906,7 +1941,7 @@ export const register: Register = on => {
 
   // Closing the pane ends "keep it open": the next approval opens it for itself.
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE) await update($, view, v => v ? { ...v, pinned: false } : v)
+    if (e.id === PANE) { stopWatching(); await update($, view, v => v ? { ...v, pinned: false } : v) }
     return next(e)
   })
 
