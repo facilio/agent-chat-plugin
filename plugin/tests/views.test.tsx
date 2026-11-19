@@ -134,6 +134,37 @@ test('the card offers a grant for 1 hour: a person, or messages to your other se
   await ui.unmount()
 })
 
+test("a docked room view has its own close under the newest message (the engine's ✕ is under the terminal app's buttons); not inline, not while an answer waits", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, pinned: true } })
+  const closed: string[] = []
+  on('ui.close', (_: any, e: any) => { closed.push(e.id); return { value: undefined } })
+  let ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '✕ close' })).toBeDefined()
+  await ui.press({ key: 'pane-close' })
+  await new Promise(r => setTimeout(r, 10))
+  expect(st.get('view').pinned).toBe(false)
+  expect(closed).toContain('agent-chat')
+  await ui.unmount()
+  // above the prompt the engine's own ✕ is reachable: no second one
+  ui = await $.ui.mount({ ...PANE('terminal'), props: { ...PANE('terminal').props, placement: 'inline' } })
+  expect(await ui.find({ type: 'Button', key: 'pane-close' })).toBeUndefined()
+  await ui.unmount()
+  st.seed('approval', { shape: 'approval-1', value: { requestId: 'abcde', tool: 'Bash', description: 'Run: ls', preview: '{}', roomId: 'rm_1' } })
+  ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Button', key: 'pane-close' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('/agent-chat pane view with no room named and none joined says how to name one', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({ joined: [] }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'pane view' } as any)
+  expect(String(r.text)).toMatch(/pane view <room> joins it/)
+})
+
 test('a pane message draws bold italic, strikethrough and a table as columns; a table too wide for the bubble stays as typed', async ($, on) => {
   const st = engine(on)
   st.seed('chat', chatValue({}))
