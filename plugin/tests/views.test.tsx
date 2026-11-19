@@ -215,18 +215,16 @@ test('/agent-chat quiet on|off is kept across sessions and starts off', async ($
   expect(await run('help')).toMatch(/\/agent-chat quiet <on\|off>/)
 })
 
-// Quiet mode: the agent's own part of a room turn isn't drawn.
-const ROOM_ROWS = (texts: string[], calls: string[]) => ({ shape: 'roomRows-1', value: { texts, calls } })
-test("quiet: a room turn's own text, react rows and result lines aren't drawn; ctrl+o shows them", async ($, on) => {
+// Quiet mode: a room turn's react rows and result lines aren't drawn.
+const ROOM_ROWS = (calls: string[]) => ({ shape: 'roomRows-1', value: { calls } })
+test("quiet: a room turn's react rows and result lines aren't drawn; ctrl+o shows them; its text is", async ($, on) => {
   const st = engine(on)
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   st.seed('chat', chatValue({}))
-  st.seed('roomRows', ROOM_ROWS(['I added a 👍 to "this is really interesting".'], ['toolu_room']))
+  st.seed('roomRows', ROOM_ROWS(['toolu_room']))
   const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
-  let ui = await $.ui.mount(said('I added a 👍 to  "this is really interesting".\n'))
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
-  await ui.unmount()
-  ui = await $.ui.mount(said('Your own answer stays.'))
+  // the agent's own text is drawn: it is nowhere else, and ctrl+o can't bring a text row back
+  let ui = await $.ui.mount(said('I added a 👍 to "this is really interesting".'))
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
   await ui.unmount()
   const call = (id: string, isExpanded = false) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: id,
@@ -259,22 +257,18 @@ test("quiet: a room turn's own text, react rows and result lines aren't drawn; c
   await ui.unmount()
 })
 
-test("quiet: the owner's own text is never hidden, even when a room turn wrote the same; a reply keeps its ↗️ line", async ($, on) => {
+test("quiet: a reply keeps its ↗️ line; a value stored by an earlier build (texts, own) hides no text", async ($, on) => {
   const st = engine(on)
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   st.seed('chat', chatValue({}))
   st.seed('roomRows', { shape: 'roomRows-1', value: { texts: ['Done.', 'Posted the summary.'], calls: ['toolu_reply'], own: ['Done.'] } })
   const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
-  let ui = await $.ui.mount(said('Done.'))
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
-  ui = await $.ui.mount(said('Posted the summary.'))
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
-  await ui.unmount()
-  // only the whole text: a row that is only the start of a kept text is drawn
-  ui = await $.ui.mount(said('Posted'))
-  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
-  await ui.unmount()
+  for (const t of ['Done.', 'Posted the summary.']) {
+    const ui = await $.ui.mount(said(t))
+    expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+    await ui.unmount()
+  }
+  let ui
   const reply = { plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: 'toolu_reply',
     props: { tool_use_id: 'toolu_reply', tool: 'mcp__agent-chat__reply', input: { room_id: 'rm_1', text: 'Posted the summary.' }, isRunning: false, isErrored: false, isInterrupted: false } } as any
   ui = await $.ui.mount(reply)
