@@ -1212,7 +1212,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat pane               open the room chat in a pane, or close it (a toggle)
   /agent-chat quiet <on|off>     on: room messages aimed elsewhere (another @mention, agent chatter) take no turn; only those naming you show, as one line
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
-  /agent-chat pane view [room]   the room as a chat in a pane, joining it first if needed (approvals show there as the last message)
+  /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
   /agent-chat pane close         close it (it opens again only when something needs your OK)
   /agent-chat pane test          a test approval in the pane and on the web; nothing is posted
   /agent-chat hold [on]          who you allowed, and how long each has left (an hour each); on = ask again for everyone
@@ -1511,32 +1511,23 @@ async function command($: $, args: string): Promise<string> {
         return 'A test approval is on its way: the pane here and a card on your Agent Chat tab. Answer either one; nothing is posted.'
       }
       if (arg === 'view' || arg.startsWith('view ')) {
-        let s = await read($, chat)
+        const s = await read($, chat)
+        if (!s.joined.length) return 'Not in a room. /agent-chat join <room>'
         const want = arg.slice(4).trim().replace(/^#/, '').toLowerCase()
-        if (!want && !s.joined.length) return 'Not in a room. /agent-chat pane view <room> joins it and shows it.'
-        const find = () => want ? s.joined.find(id => id === want || (s.roomNames[id] ?? '').toLowerCase() === want) : undefined
-        // A named room this session isn't in: join it first, the same as
-        // /agent-chat join (pairing and errors answer as the join does).
-        let joinedNow = false
-        if (want && !find()) {
-          const j = await command($, `join ${want}`)
-          s = await read($, chat)
-          if (!find()) return j
-          joinedNow = true
-        }
-        // bare: the room last shown, if this session is still in it
+        // bare: the room last shown, if this session is still in it. Joining
+        // stays /agent-chat join's alone: viewing a room never joins it.
         const last = (await read($, view))?.roomId
-        const roomId = find() ?? (last && s.joined.includes(last) ? last : s.joined[0])
+        const roomId = want
+          ? s.joined.find(id => id === want || (s.roomNames[id] ?? '').toLowerCase() === want)
+          : (last && s.joined.includes(last) ? last : s.joined[0])
+        if (!roomId) return `Not in #${want} from this session. Join it first: /agent-chat join ${want}   (in: ${s.joined.map(id => `#${s.roomNames[id] ?? id}`).join(' ')})`
         await loadView($, roomId, true)
         // The room view sits on the terminal's own background, so the messages
         // read like the transcript; an approval pane keeps the engine's gray.
         const r = await $.ui.open({ id: PANE, title: `#${s.roomNames[roomId] ?? roomId}`, focus: true, rows: PANE_ROWS, backgroundColor: 'transparent' }).catch(() => ({ isPlaced: false }))
         if (!r.isPlaced) return 'The pane has no room to open here (it needs a wider terminal, and there is none over Remote Control). The room is at https://chat.facilio.bot.'
         void paneToEnd($)
-        const name = s.roomNames[roomId] ?? roomId
-        return joinedNow
-          ? `Joined #${name} (its messages now reach this session too) and showing it in the pane. Close it with Esc or ctrl+x x.`
-          : `Showing #${name} in the pane. Close it with Esc or ctrl+x x.`
+        return `Showing #${s.roomNames[roomId] ?? roomId} in the pane. Close it with Esc or ctrl+x x.`
       }
       return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane [on|off|view [room]|close|test]; bare pane toggles)`
     }

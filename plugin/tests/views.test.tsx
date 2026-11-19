@@ -157,12 +157,14 @@ test("a docked room view has its own close under the newest message (the engine'
   await ui.unmount()
 })
 
-test('/agent-chat pane view with no room named and none joined says how to name one', async ($, on) => {
+test('/agent-chat pane view in no room says to join one', async ($, on) => {
   const st = engine(on)
   st.seed('chat', chatValue({ joined: [] }))
   on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
-  const r: any = await $.command.run({ command: 'agent-chat', args: 'pane view' } as any)
-  expect(String(r.text)).toMatch(/pane view <room> joins it/)
+  for (const args of ['pane view', 'pane view general']) {
+    const r: any = await $.command.run({ command: 'agent-chat', args } as any)
+    expect(String(r.text)).toBe('Not in a room. /agent-chat join <room>')
+  }
 })
 
 test('a pane message draws bold italic, strikethrough and a table as columns; a table too wide for the bubble stays as typed', async ($, on) => {
@@ -188,7 +190,7 @@ test('a pane message draws bold italic, strikethrough and a table as columns; a 
   await ui.unmount()
 })
 
-// pane view <room> joins a room this session isn't in, once; a room it's in, never.
+// pane view shows only rooms this session is in; joining is /agent-chat join's.
 // A fake bridge: the process says ready, and its HTTP answers are canned.
 function fakeBridge(on: any) {
   const calls: { method: string; path: string; body: any }[] = []
@@ -215,19 +217,15 @@ function fakeBridge(on: any) {
   on('clock.sleep', () => ({ value: undefined }))
   return calls
 }
-test('/agent-chat pane view <room> joins a room this session is not in, once; a room it is in, never', async ($, on) => {
+test('/agent-chat pane view never joins: a room this session is not in says to join it first', async ($, on) => {
   const st = engine(on)
   st.seed('chat', chatValue({}))
   const calls = fakeBridge(on)
   const run = async (args: string) => String(((await $.command.run({ command: 'agent-chat', args } as any)) as any).text)
-  const joins = () => calls.filter(c => c.path === '/join')
-  expect(await run('pane view agent-chat-enhancements')).toMatch(/^Joined #agent-chat-enhancements /)
-  expect(joins()).toEqual([{ method: 'POST', path: '/join', body: { room: 'agent-chat-enhancements' } }])
-  expect(st.get('chat').joined).toEqual(['rm_1', 'rm_2'])
-  // now in it, and in #general from the start: no join either time
-  expect(await run('pane view agent-chat-enhancements')).toMatch(/^Showing #agent-chat-enhancements /)
+  expect(await run('pane view agent-chat-enhancements')).toBe('Not in #agent-chat-enhancements from this session. Join it first: /agent-chat join agent-chat-enhancements   (in: #general)')
   expect(await run('pane view general')).toMatch(/^Showing #general /)
-  expect(joins()).toHaveLength(1)
+  expect(await run('pane view')).toMatch(/^Showing #general /)
+  expect(calls.filter(c => c.path === '/join')).toHaveLength(0)
 })
 
 test('/agent-chat pane close unpins the view and closes it; pane test needs a connection', async ($, on) => {
