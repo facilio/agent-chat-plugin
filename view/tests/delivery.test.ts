@@ -69,3 +69,12 @@ hi
   ])
   expect(o!.messages.map(m => [m.sender, m.text])).toEqual([['Carol', 'hi']])
 })
+
+test('a delivery with a message that names the owner says 📣 instead of ↙️', async () => {
+  const d = parseDelivery(`<agent-chat room_id="rm_1" room="general" from="Manthosh Kumar (@manthosh)" from_kind="user" addressed="false" mentions_owner="true" message_id="m5" count="1">
+@seenimohamed are you free at 4?
+</agent-chat>`)!
+  expect(d.label).toBe('📣 #general (1) · Manthosh Kumar')
+  expect(d.firstLine).toBe('@seenimohamed are you free at 4?')
+  expect(parseDelivery(`<agent-chat room_id="rm_1" room="general" from="Bob (@bob)" message_id="m6" count="1">\nhi\n</agent-chat>`)!.label.startsWith('↙️')).toBe(true)
+})

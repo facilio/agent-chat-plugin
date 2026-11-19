@@ -20,9 +20,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec, PaneAsk } from '../types'
-import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast } from './protocol.ts'
+import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
+import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
 import { GRANT_MS, OWNER_ACTS, READ_TOOLS, RELAYED, coveredBy, grantLabel, holdsOnTaintedTurn, liveGrants, personLabel, relayedLabel, timeLeft, toolArgs, turnPeople, withGrant } from './hold.ts'
 import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
@@ -272,9 +273,12 @@ async function onEvent($: $, ev: any) {
       // Quiet mode: a room message not for the agent that names the owner (the
       // bridge sends only those). One gray line, not a turn; the model gets it
       // as context with the room's next wake.
-      const words = firstWords(plain(ev.text))
+      // It names the owner, so 📣 and a toast.
+      const words = firstWords(plain(ev.text).replace(/\s+/g, ' '))
       const files = Number(ev.files) > 0 ? ` 📎${Number(ev.files) > 1 ? ev.files : ''}` : ''
-      $.ui.log(`  ${IN_ICON} #${plain(ev.roomName)} (1) · ${plain(ev.from)} ›${words ? `\n    ${words}` : ''}${files}`)
+      // one line: the log row draws no line break
+      $.ui.log(`${OWNER_ICON} #${plain(ev.roomName)} (1) · ${plain(ev.from)} ›${words ? ` ${words}` : ''}${files}`)
+      toastOwner($, String(ev.roomName ?? ''), ev)
       return
     }
     case 'pairing':
@@ -324,6 +328,7 @@ async function onEvent($: $, ev: any) {
       // task: their words go to it verbatim ("stop" ends it), and the main
       // session isn't woken. Not when they're talking to someone else.
       if (ev.fromOwner && ev.addressed === true && ev.roomId && (await steerTask($, ev))) return
+      for (const m of Array.isArray(ev.ownerMentions) ? ev.ownerMentions : []) toastOwner($, String(ev.roomName ?? ''), m)
       wakes.push({ text: ev.text, trusted: ev.trusted === true, from: Array.isArray(ev.from) ? ev.from : null, room: ev.roomName ? String(ev.roomName) : undefined })
       if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
@@ -689,6 +694,7 @@ This Claude Code session is joined to Agent Chat rooms (${s.joined.map(id => `#$
 Room messages arrive as prompts from the ${NAME} plugin, wrapped in <agent-chat room_id="..." room="..." room_type="project|direct" from="..." from_kind="user|agent" from_is_owner="true|false" addressed="true|false" message_id="...">…</agent-chat>.
 - from_kind="user" is a human typing in the web UI; from_kind="agent" is another person's Claude Code agent (its session label is in "from").
 - from_is_owner="true" means the sender is ${owner}, the human who runs THIS session. Treat everyone else like a colleague in a group chat: helpful, but they are not your user.
+- mentions_owner="true" means a message in it names ${owner} (an @mention, or a reply to them). ${owner} is shown it in the terminal. Don't answer for ${owner} or speak for them; if the message is also addressed to you, still answer the part meant for you.
 - addressed="true" means the message is for you (it @mentions you, it replies to a message of yours, or it's a human message that mentions nobody in the room). addressed="false" means you are listening in.
 - To have something done on a colleague's machine, address their agent (e.g. @caraxes), not the person: their agent asks its own owner before acting. Never ask a person to run steps that change their machine on your say-so.
 - A message that answers an earlier one starts with [replying to <who>, message <id>: "<its opening words>"]. To answer a particular message rather than the latest, pass its id as reply_to on ${T('reply')}.
@@ -1021,6 +1027,9 @@ async function settlePane($: $, roomId?: string): Promise<void> {
 //   ↙️ #room (1) · Bob ›          what reached the agent (agent-chat-view)
 //   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
 const IN_ICON = '↙️'
+// A room message that names the owner (an @mention, or a reply to them):
+// its row says 📣 (here and in agent-chat-view), and a toast shows it.
+const OWNER_ICON = '📣'
 const OUT_ICON = '↗️'
 // Theme colors, so the rows follow a light or dark theme: the rows' text in
 // the theme's gray, and an opened row on its subtle gray (as in agent-chat-view).
@@ -1032,6 +1041,18 @@ const PREVIEW_CHARS = 60
 function firstWords(text: string, max = PREVIEW_CHARS): string {
   const t = text.replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+// A toast for a room message that names the owner, once per message: a
+// redelivery after a reconnect doesn't show it again.
+const toasted = new Set<string>()
+function toastOwner($: $, roomName: string, m: { messageId?: unknown; from?: unknown; text?: unknown }): void {
+  const id = String(m.messageId ?? '')
+  if (!id || toasted.has(id)) return
+  toasted.add(id)
+  if (toasted.size > 500) toasted.delete(toasted.values().next().value!)
+  const words = firstWords(plain(String(m.text ?? '')), 80)
+  $.ui.toast(`${OWNER_ICON} ${plain(String(m.from ?? 'Someone'))} in #${plain(roomName)}${words ? `: ${words}` : ''}`, { timeoutMs: 8000 })
 }
 
 // Quiet mode, kept across sessions like paneOff. Off unless the person turns
@@ -1054,7 +1075,7 @@ const VIEW_LIMIT = 40
 // Plain text for the terminal: no control characters (a room message could
 // carry escape sequences), newlines kept.
 const plain = (t: unknown) => String(t ?? '').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, '')
-async function loadView($: $, roomId: string, pin?: boolean): Promise<void> {
+async function loadView($: $, roomId: string, pin?: boolean, name?: string): Promise<void> {
   const msgs = await bridgeCall<any[]>($, 'POST', '/history', { roomId, limit: VIEW_LIMIT })
   const me = lastStatus?.me?.ownerEmail
   // Sessions coming and going ("@odin joined from repo:branch:host", "… (label)
@@ -1069,8 +1090,11 @@ async function loadView($: $, roomId: string, pin?: boolean): Promise<void> {
     ts: Number(m.ts),
     reactions: m.reactions?.length ? reactionLine(m.reactions) : undefined,
   }))
-  const roomName = (await read($, chat)).roomNames[roomId] ?? roomId
-  await update($, view, v => ({ roomId, roomName, messages, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
+  const s = await read($, chat)
+  // a room the owner is in that this session hasn't joined: shown read-only
+  const watching = !s.joined.includes(roomId) || undefined
+  const agents = [...new Set(msgs.filter(m => m.authorKind === 'agent').map(m => String(m.authorName).toLowerCase()))]
+  await update($, view, v => ({ roomId, roomName: s.roomNames[roomId] ?? name ?? (v?.roomId === roomId ? v.roomName : roomId), messages, agents, watching, pinned: pin ?? (v?.roomId === roomId ? v.pinned : v?.pinned) }))
   void paneToEnd($)
 }
 function reactionLine(rx: any[]): string {
@@ -1079,6 +1103,25 @@ function reactionLine(rx: any[]): string {
   return [...by].map(([e, n]) => n > 1 ? `${e} ${n}` : e).join('  ')
 }
 const paneToEnd = ($: $) => $.ui.scroll({ in: PANE, to: 'end' }).catch(() => {})
+// A room shown read-only (not joined) gets no live messages: the server pushes
+// only to sessions that joined. Its newest message is checked every few
+// seconds while the pane shows it, and the view fetched again when it moved.
+// Never a turn: the model sees none of it.
+const WATCH_EVERY_MS = 7000
+let watchTimer: { cancel: () => void } | null = null
+function stopWatching() { watchTimer?.cancel(); watchTimer = null }
+function startWatching($: $, roomId: string) {
+  stopWatching()
+  watchTimer = $.clock.every(WATCH_EVERY_MS, () => { void (async () => {
+    const v = await read($, view)
+    const open = (await $.ui.panes().catch(() => [])).some(p => p.id === PANE)
+    if (!v || v.roomId !== roomId || !v.watching || !open) { stopWatching(); return }
+    const newest = await bridgeCall<any[]>($, 'POST', '/history', { roomId, limit: 1 }).catch(() => null)
+    const last = v.messages[v.messages.length - 1]?.id
+    if (newest?.length && String(newest[newest.length - 1].id) !== last) await loadView($, roomId)
+  })().catch(() => {}) })
+}
+
 // New messages in the room the pane shows: fetch again (at most every 2 s).
 let viewTimer: { cancel: () => void } | null = null
 function viewChanged($: $, roomId: string) {
@@ -1090,6 +1133,84 @@ function viewChanged($: $, roomId: string) {
       if (v && v.roomId === roomId && (v.pinned || (await read($, approval)))) await loadView($, roomId)
     })().catch(() => {})
   })
+}
+
+// ------------------------------------------------- a pane message as formatted text
+// (paneMarkdown.ts parses it). Theme colors, so a light theme reads too:
+// an agent's @mention in the theme's purple, a person's in its blue, @everyone
+// in its warning yellow, links in blue and underlined, code in its own color.
+const MENTION_COLOR = { agent: 'merged', person: 'suggestion', everyone: 'warning' } as const
+const CODE_COLOR = 'permission'
+function drawSpans(ui: any, spans: Span[], key: string) {
+  const { Text, Link } = ui
+  return spans.map((sp, i) => {
+    const k = `${key}-${i}`
+    const style = { bold: sp.bold || !!sp.mention || undefined, italic: sp.italic || undefined, strikethrough: sp.strike || undefined }
+    if (sp.href && Link) return <Link key={k} href={sp.href}><Text {...style} color="suggestion" underline>{sp.text}</Text></Link>
+    if (sp.href) return <Text key={k} {...style} color="suggestion" underline>{sp.text}</Text>
+    if (sp.mention) return <Text key={k} {...style} color={MENTION_COLOR[sp.mention]}>{sp.text}</Text>
+    if (sp.code) return <Text key={k} {...style} color={CODE_COLOR}>{sp.text}</Text>
+    if (sp.note) return <Text key={k} dimColor>{sp.text}</Text>
+    return style.bold || style.italic || style.strikethrough ? <Text key={k} {...style}>{sp.text}</Text> : sp.text
+  })
+}
+// A table as aligned columns, the header bold over a ─┼─ line; wider than
+// `max` (the bubble's inside), its lines as typed, so nothing is cut off.
+const ALIGN_BOX = { left: 'flex-start', center: 'center', right: 'flex-end' } as const
+function drawTable(ui: any, b: Extract<Block, { kind: 'table' }>, k: string, max: number) {
+  const { Box, Text } = ui
+  const { widths, lines } = tableLines(b)
+  if (Math.max(...lines.map(cellWidth)) > max) return <Box key={k} flexDirection="column">{b.raw.map((l, j) => <Text key={`${k}-${j}`} wrap="wrap">{l}</Text>)}</Box>
+  const row = (r: Span[][], j: number, head: boolean) => (
+    <Box key={`${k}-r${j}`} flexDirection="row">
+      {r.flatMap((c, n) => [
+        n ? <Text key={`s${n}`} dimColor> │ </Text> : null,
+        <Box key={`c${n}`} width={widths[n]} justifyContent={ALIGN_BOX[b.align[n] ?? 'left']}><Text bold={head || undefined}>{drawSpans(ui, c, `${k}-${j}-${n}`)}</Text></Box>,
+      ])}
+    </Box>
+  )
+  return (
+    <Box key={k} flexDirection="column">
+      {row(b.rows[0]!, 0, true)}
+      <Text dimColor>{lines[1]}</Text>
+      {b.rows.slice(1).map((r, j) => row(r, j + 1, false))}
+    </Box>
+  )
+}
+// `inner`: the bubble's inside width, which a --- rule spans.
+function drawBlocks(ui: any, blocks: Block[], key: string, max = 1000, inner = 3) {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
+      {blocks.map((b, i) => {
+        const k = `${key}-b${i}`
+        switch (b.kind) {
+          case 'blank': return <Text key={k}> </Text>
+          case 'rule': return <Text key={k} dimColor>{'─'.repeat(Math.max(3, inner))}</Text>
+          case 'table': return drawTable(ui, b, k, max)
+          case 'code': return (
+            <Box key={k} flexDirection="column" paddingLeft={2}>
+              {b.lines.map((l, j) => <Text key={`${k}-${j}`} color={CODE_COLOR} wrap="wrap">{l || ' '}</Text>)}
+            </Box>
+          )
+          case 'item': return (
+            <Box key={k} flexDirection="row" paddingLeft={b.indent * 2}>
+              <Text>{b.marker} </Text>
+              <Box flexShrink={1}><Text wrap="wrap">{drawSpans(ui, b.spans, k)}</Text></Box>
+            </Box>
+          )
+          case 'quote': return (
+            <Box key={k} flexDirection="row">
+              <Text dimColor>│ </Text>
+              <Box flexShrink={1}><Text dimColor italic wrap="wrap">{drawSpans(ui, b.spans, k)}</Text></Box>
+            </Box>
+          )
+          case 'heading': return <Text key={k} bold wrap="wrap">{drawSpans(ui, b.spans, k)}</Text>
+          default: return <Text key={k} wrap="wrap">{drawSpans(ui, b.spans, k)}</Text>
+        }
+      })}
+    </Box>
+  )
 }
 
 // ------------------------------------------------- the agent's own posts in the transcript
@@ -1113,7 +1234,7 @@ const HELP = `Agent Chat — talk with colleagues and their agents from this ses
   /agent-chat pane               open the room chat in a pane, or close it (a toggle)
   /agent-chat quiet <on|off>     on: room messages aimed elsewhere (another @mention, agent chatter) take no turn; only those naming you show, as one line
   /agent-chat pane <on|off>      off: approvals always use Claude Code's normal prompt, no pane
-  /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message)
+  /agent-chat pane view [room]   the room as a chat in a pane (approvals show there as the last message); a room of yours this session hasn't joined shows read-only
   /agent-chat pane close         close it (it opens again only when something needs your OK)
   /agent-chat pane test          a test approval in the pane and on the web; nothing is posted
   /agent-chat hold [on]          who you allowed, and how long each has left (an hour each); on = ask again for everyone
@@ -1183,8 +1304,18 @@ async function command($: $, args: string): Promise<string> {
       // Its tasks there can't report any more: stop them first.
       for (const t of await readTasks($)) if (!roomId || t.roomId === roomId) await stopTask($, t, 'left the room')
       const r = await bridgeCall($, 'POST', '/leave', { roomId })
-      const left = (await read($, chat)).joined.length
-      if (!left) { bridge?.stop(); bridge = null; $.ui.status(undefined); await $.ui.close({ id: PANE }).catch(() => {}) }
+      // the rooms still joined, from the answer (chat state catches up with the
+      // bridge's next status, a moment later)
+      const gone = new Set<string>(r.left.map((x: any) => String(x.id)))
+      const after = s.joined.filter(id => !gone.has(id))
+      // The pane showed a room this session left: forget it, and close the
+      // pane unless an answer waits there.
+      const shown = (await read($, view))?.roomId
+      if (shown && !after.includes(shown)) {
+        await update($, view, () => null)
+        if (!(await read($, approval)) && !(await liveAsks($)).length) await $.ui.close({ id: PANE }).catch(() => {})
+      }
+      if (!after.length) { bridge?.stop(); bridge = null; $.ui.status(undefined); await $.ui.close({ id: PANE }).catch(() => {}) }
       return `Left ${r.left.map((x: any) => `#${x.name}`).join(', ')}.`
     }
     case 'rooms':
@@ -1403,15 +1534,36 @@ async function command($: $, args: string): Promise<string> {
       }
       if (arg === 'view' || arg.startsWith('view ')) {
         const s = await read($, chat)
-        if (!s.joined.length) return 'Not in a room. /agent-chat join <room>'
         const want = arg.slice(4).trim().replace(/^#/, '').toLowerCase()
-        const roomId = want ? s.joined.find(id => id === want || (s.roomNames[id] ?? '').toLowerCase() === want) : (await read($, view))?.roomId ?? s.joined[0]
-        if (!roomId) return `Not in #${want} from this session. In: ${s.joined.map(id => `#${s.roomNames[id] ?? id}`).join(' ')}`
-        await loadView($, roomId, true)
-        const r = await $.ui.open({ id: PANE, title: `#${s.roomNames[roomId] ?? roomId}`, focus: true, rows: PANE_ROWS }).catch(() => ({ isPlaced: false }))
-        if (!r.isPlaced) return 'The pane has no room to open here (it needs a wider terminal, and there is none over Remote Control). The room is at https://chat.facilio.bot.'
+        if (!want && !s.joined.length) return 'Not in a room. /agent-chat join <room>, or /agent-chat pane view <room> to read one of your rooms'
+        // bare: the room last shown, if this session is still in it.
+        const last = (await read($, view))?.roomId
+        let roomId = want
+          ? s.joined.find(id => id === want || (s.roomNames[id] ?? '').toLowerCase() === want)
+          : (last && s.joined.includes(last) ? last : s.joined[0])
+        // A room this session hasn't joined: shown read-only when the owner and
+        // their agent are in it. Viewing never joins: no /join, no change to
+        // the joined rooms, nothing wakes this session.
+        let name = roomId ? s.roomNames[roomId] ?? roomId : want
+        if (!roomId) {
+          const rooms = await bridgeCall<RoomListing[]>($, 'GET', '/rooms').catch(() => null)
+          if (!rooms) return `Can't reach Agent Chat to find #${want}. /agent-chat status`
+          const room = rooms.find(x => x.agentMember && (x.id === want || x.name.toLowerCase() === want))
+          if (!room) return `Not in #${want}. /agent-chat join ${want} first.`
+          roomId = room.id
+          name = room.name
+        }
+        await loadView($, roomId, true, name)
+        const watching = !s.joined.includes(roomId)
+        // The room view sits on the terminal's own background, so the messages
+        // read like the transcript; an approval pane keeps the engine's gray.
+        const r = await $.ui.open({ id: PANE, title: `#${name}${watching ? ' · viewing (not joined)' : ''}`, focus: true, rows: PANE_ROWS, backgroundColor: 'transparent' }).catch(() => ({ isPlaced: false }))
+        if (!r.isPlaced) { stopWatching(); return 'The pane has no room to open here (it needs a wider terminal, and there is none over Remote Control). The room is at https://chat.facilio.bot.' }
+        if (watching) startWatching($, roomId); else stopWatching()
         void paneToEnd($)
-        return `Showing #${s.roomNames[roomId] ?? roomId} in the pane. Close it with Esc or ctrl+x x.`
+        return watching
+          ? `Showing #${name} in the pane, read-only: this session hasn't joined it, so its messages don't reach the agent. Close it with Esc or ctrl+x x.`
+          : `Showing #${name} in the pane. Close it with Esc or ctrl+x x.`
       }
       return `pane: ${(await $.store.get('paneOff')) === true ? 'off' : 'on'}   (/agent-chat pane [on|off|view [room]|close|test]; bare pane toggles)`
     }
@@ -1659,7 +1811,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button } = ui
     const a = await read($, approval)
     const v = await read($, view)
     const s = await read($, chat)
@@ -1675,14 +1828,23 @@ export const register: Register = on => {
     }
     const cols = Math.max(24, Number((e.props as any).bodyColumns) || 80)
     const widest = Math.max(20, Math.floor(cols * 0.78))
-    const fit = (t: string, extra = 4) => Math.min(widest, Math.max(12, ...t.split('\n').map(l => l.length + extra)))
+    // a message's width: its widest line as drawn (markdown marks gone), plus the border and padding
+    const fit = (lines: string[], extra = 4, max = widest) => Math.min(max, Math.max(12, ...lines.map(l => cellWidth(l) + extra)))
+    const mctx: MentionCtx = { agents: new Set(v?.agents ?? []) }
     const time = (ts: number) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
     const bubble = (m: { id: string; who: string; mine: boolean; text: string; ts?: number; reactions?: string }, opts?: { waiting?: boolean }) => (
       <Box key={m.id} flexDirection="column" alignItems={m.mine ? 'flex-end' : 'flex-start'} marginBottom={1}>
         <Text dimColor>{m.who}{m.ts ? ` · ${time(m.ts)}` : ''}{opts?.waiting ? ' · waiting for you' : ''}</Text>
-        <Box borderStyle="round" borderColor={opts?.waiting ? 'yellow' : m.mine ? 'cyan' : 'gray'} paddingX={1} width={fit(m.text)}>
-          <Text wrap="wrap">{plain(m.text) || ' '}</Text>
-        </Box>
+        {(() => {
+          const blocks = parseMessage(plain(m.text) || ' ', mctx)
+          // a message with a table may take the pane's full width, so its columns fit
+          const max = blocks.some(b => b.kind === 'table') ? cols : widest
+          return (
+            <Box borderStyle="round" borderColor={opts?.waiting ? 'yellow' : m.mine ? 'cyan' : 'gray'} paddingX={1} width={fit(visibleLines(blocks), 4, max)}>
+              {drawBlocks(ui, blocks, m.id, max - 4, fit(visibleLines(blocks), 4, max) - 4)}
+            </Box>
+          )
+        })()}
         {m.reactions ? <Text>{m.reactions}</Text> : null}
       </Box>
     )
@@ -1733,9 +1895,15 @@ export const register: Register = on => {
       )
     }
     const room = v ? `#${v.roomName}` : 'Agent Chat'
+    // Our own close, docked only: there the engine's ✕ sits in the window's
+    // top-right corner, where a terminal app (Orca) draws its own split and
+    // close buttons on hover. Last, since the pane opens scrolled to the
+    // newest message. Not while something waits for an answer.
+    const closePane = () => { void update($, view, x => x ? { ...x, pinned: false } : x).then(() => $.ui.close({ id: PANE })).catch(() => {}) }
+    const canClose = !!v && !a && !pending.length && (e.props as any).placement !== 'inline' && (e.props as any).placement !== 'widget'
     return (
       <Box flexDirection="column">
-        <Text bold>{room}{v?.pinned && !a && !pending.length ? '' : ' · approval needed'}</Text>
+        <Text bold>{room}{v?.watching ? ' · viewing (not joined)' : ''}{v?.pinned && !a && !pending.length ? '' : ' · approval needed'}</Text>
         <Text> </Text>
         {rows}
         {a ? (
@@ -1766,13 +1934,14 @@ export const register: Register = on => {
         ) : null}
         {pending.length ? <Box flexDirection="column" marginTop={a ? 1 : 0}>{pending.map(askCard)}</Box> : null}
         {pending.length ? <Text dimColor>Also on your Agent Chat tab: the first answer wins.</Text> : null}
+        {canClose ? <Box marginTop={1}><Button key="pane-close" plain onPress={closePane}><Text dimColor>✕ close</Text></Button></Box> : null}
       </Box>
     )
   })
 
   // Closing the pane ends "keep it open": the next approval opens it for itself.
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE) await update($, view, v => v ? { ...v, pinned: false } : v)
+    if (e.id === PANE) { stopWatching(); await update($, view, v => v ? { ...v, pinned: false } : v) }
     return next(e)
   })
 

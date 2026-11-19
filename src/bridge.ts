@@ -158,8 +158,11 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
   for (const m of woke.slice(0, -1)) lines.push(`${who(m)}: ${withFiles(m)}`);
   lines.push(woke.length > 1 ? `${who(last)}: ${withFiles(last)}` : withFiles(last));
   const isOwner = last.authorKind === 'user' && !!me && last.authorId === me.ownerEmail;
+  // Messages here that name the owner: the terminal marks the row 📣 and
+  // shows a toast (display only; the model sees the attribute, nothing more).
+  const forOwner = woke.filter(namesOwner);
   const tag = `<agent-chat room_id="${attr(roomId)}" room="${attr(roomName)}"${roomType ? ` room_type="${roomType}"` : ''} from="${attr(who(last))}" from_kind="${last.authorKind}" `
-    + `from_is_owner="${isOwner}" addressed="${addressed}" message_id="${attr(last.id)}" count="${woke.length}">`;
+    + `from_is_owner="${isOwner}" addressed="${addressed}"${forOwner.length ? ' mentions_owner="true"' : ''} message_id="${attr(last.id)}" count="${woke.length}">`;
   // trusted: everything in it is the owner's own (or a system line) and it
   // carries no room description. Anything else makes it a held turn (hold.ts).
   const ownerOnly = (m: ChatMessage) => m.authorKind === 'system' || (m.authorKind === 'user' && !!me && m.authorId === me.ownerEmail);
@@ -184,8 +187,19 @@ function wakeFor(roomId: string, woke: ChatMessage[], addressed: boolean) {
     people.set(email, name);
   }
   const from = pinned && people.size ? [...people].map(([email, name]) => ({ email, name })) : null;
-  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, from, text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
+  emit({ type: 'wake', roomId, roomName, addressed, trusted, fromOwner, from, ownerMentions: forOwner.map(ownerNotice), text: `${tag}\n${inert(lines.join('\n'))}\n</agent-chat>` });
 }
+
+// A message that names the owner: an @mention of them, or a reply to their
+// message. Not the owner's own words, and not their own agents' (any session).
+function namesOwner(m: ChatMessage): boolean {
+  if (!me) return false;
+  if (m.authorKind === 'user' && m.authorId === me.ownerEmail) return false;
+  if (m.authorKind === 'agent' && m.ownerEmail === me.ownerEmail) return false;
+  const handle = userHandle(me.ownerEmail).toLowerCase();
+  return (m.mentions ?? []).some((h) => (h.split(':')[0] ?? '').toLowerCase() === handle) || m.replyTo?.authorId === me.ownerEmail;
+}
+const ownerNotice = (m: ChatMessage) => ({ messageId: m.id, from: m.authorKind === 'agent' ? `@${m.authorName}` : m.authorName, text: m.text });
 
 function remember(m: ChatMessage) {
   const list = unseen.get(m.roomId) ?? [];
@@ -220,11 +234,9 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
     // with the next wake, not a dropped one.
     if (quiet && !addressedRooms.has(roomId)) {
       const roomName = rooms.get(roomId)?.name ?? roomId;
-      const ownerHandle = me ? userHandle(me.ownerEmail).toLowerCase() : null;
       for (const m of woke) {
         remember(m);
-        const forOwner = !!me && ((m.mentions ?? []).some((h) => h.split(':')[0] === ownerHandle) || m.replyTo?.authorId === me.ownerEmail);
-        if (forOwner) emit({ type: 'heard', roomId, roomName, messageId: m.id, from: m.authorKind === 'agent' ? `@${m.authorName}` : m.authorName, text: m.text, files: (m.attachments ?? []).length });
+        if (namesOwner(m)) emit({ type: 'heard', roomId, roomName, ...ownerNotice(m), files: (m.attachments ?? []).length });
       }
       continue;
     }

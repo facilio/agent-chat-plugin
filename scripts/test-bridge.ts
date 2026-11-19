@@ -312,6 +312,18 @@ async function main() {
     sock.send(JSON.stringify({ type: 'message', message: msg('zz0000005zs', 'fyi'), wake: true, addressed: false }));
     assert.match((await loudP).text, /addressed="false"/);
     assert.equal(events.filter((e) => e.type === 'heard' && e.messageId === 'zz0000005zs').length, 0);
+    // 4c. a message that names the owner, quiet off: its wake says so (📣 and
+    //     a toast in the terminal); the owner's own agents don't count
+    const namedP = nextEvent((e) => e.type === 'wake' && e.text.includes('message_id="zz0000005zt"'));
+    sock.send(JSON.stringify({ type: 'message', message: { ...msg('zz0000005zt', '@owner free at 4?'), mentions: ['owner'] }, wake: true, addressed: false }));
+    const named = await namedP;
+    assert.match(named.text, /addressed="false" mentions_owner="true" message_id="zz0000005zt"/);
+    assert.deepEqual(named.ownerMentions, [{ messageId: 'zz0000005zt', from: 'Colleague', text: '@owner free at 4?' }]);
+    const selfP = nextEvent((e) => e.type === 'wake' && e.text.includes('message_id="zz0000005zu"'));
+    sock.send(JSON.stringify({ type: 'message', message: { ...msg('zz0000005zu', '@owner done', { authorKind: 'agent', authorId: 'ag_a', authorName: 'owner-ai', ownerEmail: owner, ownerName: 'Owner Person', session: 'api:main:other' }), mentions: ['owner'] }, wake: true, addressed: false }));
+    const self = await selfP;
+    assert.doesNotMatch(self.text, /mentions_owner/);
+    assert.deepEqual(self.ownerMentions, []);
 
     // 5. reply + summary update
     const sendF = nextFrame();

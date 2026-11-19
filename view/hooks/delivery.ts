@@ -68,6 +68,8 @@ function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
 //   ↙️ #room (1) · Bob ›          what reached the agent (agent-chat-view)
 //   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
 export const IN_ICON = '↙️'
+// A delivery with a message that names the owner (mentions_owner="true")
+export const OWNER_ICON = '📣'
 export const OUT_ICON = '↗️'
 // The rows' text color: the theme's gray, so it follows a light or dark theme
 export const ROW_FG = 'inactive'
@@ -96,7 +98,8 @@ export function parseDelivery(text: string): Delivery | null {
   const newest = blocks[blocks.length - 1]!.messages.filter(m => !m.system).pop()
   const hashed = rooms.map(r => `#${r}`).join(', ')
   // The arrow says it came in: room (count) · who, the newest message's first line under it
-  const label = `${IN_ICON} ${hashed}${decision ? '' : ` (${n})`} · ${decision ? `You ${decision} a request` : who || 'Someone'}`
+  const icon = text.match(/<agent-chat [^>\n]*\bmentions_owner="true"/) ? OWNER_ICON : IN_ICON
+  const label = `${icon} ${hashed}${decision ? '' : ` (${n})`} · ${decision ? `You ${decision} a request` : who || 'Someone'}`
   const firstLine = !decision && newest ? `${n > 1 && newest.sender ? `${newest.sender}: ` : ''}${firstWords(newest.text, 200)}` : undefined
   return { key: `${last}:${n}:${blocks.length}`, label, blocks, firstLine }
 }

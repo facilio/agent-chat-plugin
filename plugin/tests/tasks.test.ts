@@ -267,3 +267,44 @@ test('a message sent to another session on a room-started turn says first that i
   await ($.session as any).send({ to: 'agent-chat-58', text: 'hello' })
   expect(sent[2]).toBe('hello')
 })
+
+// A room message that names the owner: 📣 and a toast, once per message.
+test('a message naming the owner shows 📣 and one toast, quiet on (heard) or off (wake)', async ($, on) => {
+  const st = engine(on)
+  on('session.id', () => ({ value: 'cc1' }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('tool.list', () => ({ value: [] }))
+  on('tool.register', (_: any, e: any) => ({ value: { tool: `mcp__agent-chat__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'agent-chat' } }))
+  on('agent.register', () => ({ value: { agent: 'agent-chat:task' } }))
+  on('agent.list', () => ({ value: [] }))
+  on('prompt.submit', () => ({ drop: 'test' }))
+  on('clock.every', () => ({ value: undefined }))
+  const store = new Map<string, unknown>()
+  on('store.get', (_: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', (_: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
+  on('clock.sleep', () => ({ value: undefined }))
+  on('session.identity', () => ({ value: { email: 'seenimohamed@example.com' } }))
+  const toasts: string[] = []
+  const logs: string[] = []
+  on('ui.toast', (_: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+  on('ui.log', (_: any, e: any) => { logs.push(e.text); return { value: undefined } })
+  const line = (o: unknown) => JSON.stringify(o) + '\n'
+  const named = { messageId: 'm1', from: 'Manthosh Kumar', text: '@seenimohamed are you **free** at 4?' }
+  let spawned = 0
+  on('process.spawn', async function* () {
+    spawned++
+    yield { stream: 'stdout', text: line({ type: 'ready' }) }
+    yield { stream: 'stdout', text: line({ type: 'heard', roomId: 'rm_1', roomName: 'general', ...named, files: 0 }) }
+    // the same message again (a redelivery): no second toast
+    yield { stream: 'stdout', text: line({ type: 'heard', roomId: 'rm_1', roomName: 'general', ...named, files: 0 }) }
+    yield { stream: 'stdout', text: line({ type: 'wake', roomId: 'rm_1', roomName: 'general', addressed: false, trusted: false, ownerMentions: [{ messageId: 'm2', from: '@odin', text: '@seenimohamed done' }], text: '<agent-chat room_id="rm_1" room="general" mentions_owner="true" message_id="m2" count="1">\n@seenimohamed done\n</agent-chat>' }) }
+    await new Promise(() => {})
+  } as any)
+  st.seed(chatWith({ tainted: false }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true } as any)
+  for (let i = 0; i < 50 && toasts.length < 2; i++) await new Promise(r => setTimeout(r, 10))
+  expect(spawned).toBe(1)
+  expect(toasts).toEqual(['📣 Manthosh Kumar in #general: @seenimohamed are you free at 4?', '📣 @odin in #general: @seenimohamed done'])
+  expect(logs.filter(l => l === '📣 #general (1) · Manthosh Kumar › @seenimohamed are you free at 4?').length).toBe(2)
+})

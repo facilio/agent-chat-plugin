@@ -94,7 +94,10 @@ test('the pane is the room as a chat, with the held post in full as its last mes
     const ui = await $.ui.mount(PANE(surface))
     expect(await ui.find({ type: 'Text', text: /Can someone post the deploy notes/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /👍 2/ })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /^Deploy notes:/ }))?.text).toMatch(/End\.$/)
+    // in full, drawn as markdown: the heading line, every list item, the last line
+    expect(await ui.find({ type: 'Text', text: /^Deploy notes:$/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /^a line of the notes that goes on for a while$/ })).toHaveLength(12)
+    expect(await ui.find({ type: 'Text', text: /^End\.$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /waiting for you/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Held because it mentions a file path/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'allow' })).toBeDefined()
@@ -129,6 +132,144 @@ test('the card offers a grant for 1 hour: a person, or messages to your other se
   expect((await ui.find({ type: 'Button', key: 'person' }))?.text).toBe('Allow messages to your other sessions for 1 hour')
   expect(await ui.find({ type: 'Text', text: /each one says it is relayed/ })).toBeDefined()
   await ui.unmount()
+})
+
+test("a docked room view has its own close under the newest message (the engine's ✕ is under the terminal app's buttons); not inline, not while an answer waits", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, pinned: true } })
+  const closed: string[] = []
+  on('ui.close', (_: any, e: any) => { closed.push(e.id); return { value: undefined } })
+  let ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '✕ close' })).toBeDefined()
+  await ui.press({ key: 'pane-close' })
+  await new Promise(r => setTimeout(r, 10))
+  expect(st.get('view').pinned).toBe(false)
+  expect(closed).toContain('agent-chat')
+  await ui.unmount()
+  // above the prompt the engine's own ✕ is reachable: no second one
+  ui = await $.ui.mount({ ...PANE('terminal'), props: { ...PANE('terminal').props, placement: 'inline' } })
+  expect(await ui.find({ type: 'Button', key: 'pane-close' })).toBeUndefined()
+  await ui.unmount()
+  st.seed('approval', { shape: 'approval-1', value: { requestId: 'abcde', tool: 'Bash', description: 'Run: ls', preview: '{}', roomId: 'rm_1' } })
+  ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Button', key: 'pane-close' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('/agent-chat pane view in no room says to join one', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({ joined: [] }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const r: any = await $.command.run({ command: 'agent-chat', args: 'pane view' } as any)
+  expect(String(r.text)).toBe('Not in a room. /agent-chat join <room>, or /agent-chat pane view <room> to read one of your rooms')
+})
+
+test('a pane message draws bold italic, strikethrough and a table as columns; a table too wide for the bubble stays as typed', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const table = '| Item | Status |\n| --- | :---: |\n| Room join | ✅ done |'
+  const text = `***both*** and ~~gone~~\n\n${table}\n\n---\nend`
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, messages: [{ id: 'm1', who: '@odin', mine: false, text, ts: Date.now() }] } })
+  let ui = await $.ui.mount(PANE('terminal'))
+  const both = await ui.find({ type: 'Text', text: /^both$/ })
+  expect([both?.props.bold, both?.props.italic]).toEqual([true, true])
+  expect((await ui.find({ type: 'Text', text: /^gone$/ }))?.props.strikethrough).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^Item$/ }))?.props.bold).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^─+┼─+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\| --- \|/ })).toBeUndefined()
+  // a --- rule spans the bubble's inside, as wide as its widest line
+  expect(await ui.find({ type: 'Text', text: /^─{19}$/ })).toBeDefined()
+  await ui.unmount()
+  const wide = `| ${'a'.repeat(40)} | ${'b'.repeat(40)} |\n| --- | --- |\n| x | y |`
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, messages: [{ id: 'm1', who: '@odin', mine: false, text: wide, ts: Date.now() }] } })
+  ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '| --- | --- |' })).toBeDefined()
+  await ui.unmount()
+})
+
+// pane view never joins: a room of the owner's this session hasn't joined shows
+// read-only; joining is /agent-chat join's.
+// A fake bridge: the process says ready, and its HTTP answers are canned.
+function fakeBridge(on: any) {
+  const calls: { method: string; path: string; body: any }[] = []
+  const history: any[] = [{ id: 'm1', authorKind: 'user', authorName: 'Manthosh Kumar', authorId: 'manthosh@example.com', text: 'hello', ts: 1 }]
+  on('process.spawn', async function* () { yield { stream: 'stdout', text: JSON.stringify({ type: 'ready' }) + '\n' }; await new Promise(() => {}) } as any)
+  on('http.fetch', (_: any, e: any) => {
+    const path = new URL(e.url).pathname
+    const method = e.init?.method ?? 'GET'
+    const body = e.init?.body ? JSON.parse(e.init.body) : undefined
+    calls.push({ method, path, body })
+    const answer: any =
+      path === '/status' ? { state: 'online', me: { name: 'caraxes', ownerEmail: 'seenimohamed@example.com' } }
+      : path === '/join' ? { id: 'rm_2', name: 'agent-chat-enhancements', members: [] }
+      : path === '/rooms' ? [
+          { id: 'rm_1', name: 'general', joined: true, agentMember: true, members: [] },
+          { id: 'rm_2', name: 'agent-chat-enhancements', joined: false, agentMember: true, members: [] },
+          { id: 'rm_3', name: 'hr', joined: false, agentMember: false, members: [] },
+        ]
+      : path === '/history' ? history.slice(-(body?.limit ?? 40))
+      : {}
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answer) } }
+  })
+  on('session.id', () => ({ value: 'cc1' }))
+  on('session.identity', () => ({ value: { email: 'seenimohamed@example.com' } }))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  on('tool.list', () => ({ value: [] }))
+  on('tool.register', (_: any, e: any) => ({ value: { tool: `mcp__agent-chat__${e.name}` } }))
+  const titles: string[] = []
+  let open = false
+  on('ui.open', (_: any, e: any) => { titles.push(e.title); open = true; return { value: { isPlaced: true } } })
+  on('ui.close', () => { open = false; return { value: undefined } })
+  on('ui.panes', () => ({ value: open ? [{ id: 'agent-chat', isPlaced: true }] : [] }))
+  // each period of $.clock.every ends when the test calls tick()
+  const periods: (() => void)[] = []
+  on('clock.every', () => new Promise(res => periods.push(() => res({ value: undefined }))))
+  const tick = async () => { periods.shift()?.(); for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 5)) }
+  on('ui.scroll', () => ({ value: { offset: 0 } }))
+  on('clock.sleep', () => ({ value: undefined }))
+  return Object.assign(calls, { history, titles, tick })
+}
+test("/agent-chat pane view <room> of yours this session hasn't joined shows it read-only: no join, joined rooms unchanged", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const calls = fakeBridge(on)
+  const run = async (args: string) => String(((await $.command.run({ command: 'agent-chat', args } as any)) as any).text)
+  expect(await run('pane view agent-chat-enhancements')).toMatch(/^Showing #agent-chat-enhancements in the pane, read-only/)
+  expect(calls.filter(c => c.path === '/join')).toHaveLength(0)
+  expect(st.get('chat').joined).toEqual(['rm_1'])
+  expect(st.get('chat').pendingJoin).toBeUndefined()
+  expect(st.get('view')).toMatchObject({ roomId: 'rm_2', roomName: 'agent-chat-enhancements', watching: true })
+  expect(calls.titles.at(-1)).toBe('#agent-chat-enhancements · viewing (not joined)')
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: '#agent-chat-enhancements · viewing (not joined)' })).toBeDefined()
+  await ui.unmount()
+  // a room the agent isn't in, or no such room: join first
+  expect(await run('pane view hr')).toBe('Not in #hr. /agent-chat join hr first.')
+  expect(await run('pane view nowhere')).toBe('Not in #nowhere. /agent-chat join nowhere first.')
+  // a joined room: as before, not read-only
+  expect(await run('pane view general')).toMatch(/^Showing #general in the pane\. /)
+  expect(st.get('view').watching).toBeUndefined()
+  expect(calls.filter(c => c.path === '/join')).toHaveLength(0)
+})
+
+test('a read-only room is checked for new messages while the pane shows it, and no more once it closes', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const calls = fakeBridge(on)
+  const polls = () => calls.filter(c => c.path === '/history' && c.body?.limit === 1).length
+  await $.command.run({ command: 'agent-chat', args: 'pane view agent-chat-enhancements' } as any)
+  await calls.tick()
+  expect(polls()).toBe(1)
+  // a new message: the view is fetched again and shows it
+  calls.history.push({ id: 'm2', authorKind: 'agent', authorName: 'odin', ownerEmail: 'manthosh@example.com', text: 'new one', ts: 2 })
+  await calls.tick()
+  expect(polls()).toBe(2)
+  expect(st.get('view').messages.map((m: any) => m.id)).toEqual(['m1', 'm2'])
+  // closed: the next period finds it gone and stops; none after that
+  expect(String(((await $.command.run({ command: 'agent-chat', args: 'pane close' } as any)) as any).text)).toMatch(/^Pane closed/)
+  await calls.tick(); await calls.tick(); await calls.tick()
+  expect(polls()).toBe(2)
 })
 
 test('/agent-chat pane close unpins the view and closes it; pane test needs a connection', async ($, on) => {
@@ -314,5 +455,26 @@ test("the agent's post is one gray line that opens to the post with a fold line;
   await ui.unmount()
   ui = await $.ui.mount({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: 'r2', props: { tool_use_id: 'toolu_r', tool: 'mcp__agent-chat__reply', output: 'sent', isErrored: false } } as any)
   expect((await ui.find({ type: 'Text', text: '⎿  sent' }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+// The pane draws a room message as formatted text, like the web: marks drawn,
+// @mentions and links in their own colors (paneMarkdown.ts).
+test('a pane message is drawn as markdown: bold, a list, code, colored @mentions and links; control characters still go', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const text = '@seenimohamed @caraxes **Agent Chat 0.16.0 is out**\u001b[2J. Run `/agent-chat update`.\n\n1. **Fixed:** the bridge\n- see https://github.com/facilio/agent-chat-plugin/pull/3\n- @everyone please update'
+  st.seed('view', { ...VIEW, value: { ...VIEW.value, agents: ['odin', 'caraxes'], messages: [{ id: 'm1', who: '@odin', mine: false, text, ts: Date.now() }] } })
+  const ui = await $.ui.mount(PANE('terminal'))
+  expect(await ui.find({ type: 'Text', text: /\*\*/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^Agent Chat 0\.16\.0 is out$/ }))?.props.bold).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^\/agent-chat update$/ }))?.props.color).toBe('permission')
+  expect((await ui.find({ type: 'Text', text: /^@caraxes$/ }))?.props.color).toBe('merged')
+  expect((await ui.find({ type: 'Text', text: /^@seenimohamed$/ }))?.props.color).toBe('suggestion')
+  expect((await ui.find({ type: 'Text', text: /^@everyone$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/facilio/agent-chat-plugin/pull/3')
+  expect(await ui.find({ type: 'Text', text: /^1\. $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^• $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\u001b/ })).toBeUndefined()
   await ui.unmount()
 })
