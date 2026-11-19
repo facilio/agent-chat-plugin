@@ -69,8 +69,8 @@ function parseBlock(attrs: Record<string, string>, body: string): RoomBlock {
 //   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
 export const IN_ICON = '↙️'
 export const OUT_ICON = '↗️'
-// The rows' text color, darker than Claude Code's own gray (246)
-export const ROW_FG = '#6c6c6c'
+// The rows' text color: the theme's gray, so it follows a light or dark theme
+export const ROW_FG = 'inactive'
 // The first words of the delivery's newest message, for its one-line label.
 export const PREVIEW_CHARS = 60
 export function firstWords(text: string, max = PREVIEW_CHARS): string {
