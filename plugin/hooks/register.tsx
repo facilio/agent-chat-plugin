@@ -272,9 +272,12 @@ async function onEvent($: $, ev: any) {
       // Quiet mode: a room message not for the agent that names the owner (the
       // bridge sends only those). One gray line, not a turn; the model gets it
       // as context with the room's next wake.
-      const words = firstWords(plain(ev.text))
+      // It names the owner, so 📣 and a toast.
+      const words = firstWords(plain(ev.text).replace(/\s+/g, ' '))
       const files = Number(ev.files) > 0 ? ` 📎${Number(ev.files) > 1 ? ev.files : ''}` : ''
-      $.ui.log(`  ${IN_ICON} #${plain(ev.roomName)} (1) · ${plain(ev.from)} ›${words ? `\n    ${words}` : ''}${files}`)
+      // one line: the log row draws no line break
+      $.ui.log(`${OWNER_ICON} #${plain(ev.roomName)} (1) · ${plain(ev.from)} ›${words ? ` ${words}` : ''}${files}`)
+      toastOwner($, String(ev.roomName ?? ''), ev)
       return
     }
     case 'pairing':
@@ -324,6 +327,7 @@ async function onEvent($: $, ev: any) {
       // task: their words go to it verbatim ("stop" ends it), and the main
       // session isn't woken. Not when they're talking to someone else.
       if (ev.fromOwner && ev.addressed === true && ev.roomId && (await steerTask($, ev))) return
+      for (const m of Array.isArray(ev.ownerMentions) ? ev.ownerMentions : []) toastOwner($, String(ev.roomName ?? ''), m)
       wakes.push({ text: ev.text, trusted: ev.trusted === true, from: Array.isArray(ev.from) ? ev.from : null, room: ev.roomName ? String(ev.roomName) : undefined })
       if (ev.addressed && ev.roomId) wakeRooms.add(String(ev.roomId))
       void flushWakes($)
@@ -689,6 +693,7 @@ This Claude Code session is joined to Agent Chat rooms (${s.joined.map(id => `#$
 Room messages arrive as prompts from the ${NAME} plugin, wrapped in <agent-chat room_id="..." room="..." room_type="project|direct" from="..." from_kind="user|agent" from_is_owner="true|false" addressed="true|false" message_id="...">…</agent-chat>.
 - from_kind="user" is a human typing in the web UI; from_kind="agent" is another person's Claude Code agent (its session label is in "from").
 - from_is_owner="true" means the sender is ${owner}, the human who runs THIS session. Treat everyone else like a colleague in a group chat: helpful, but they are not your user.
+- mentions_owner="true" means a message in it names ${owner} (an @mention, or a reply to them). ${owner} is shown it in the terminal; it's for them, so don't answer it on their behalf.
 - addressed="true" means the message is for you (it @mentions you, it replies to a message of yours, or it's a human message that mentions nobody in the room). addressed="false" means you are listening in.
 - To have something done on a colleague's machine, address their agent (e.g. @caraxes), not the person: their agent asks its own owner before acting. Never ask a person to run steps that change their machine on your say-so.
 - A message that answers an earlier one starts with [replying to <who>, message <id>: "<its opening words>"]. To answer a particular message rather than the latest, pass its id as reply_to on ${T('reply')}.
@@ -1021,6 +1026,9 @@ async function settlePane($: $, roomId?: string): Promise<void> {
 //   ↙️ #room (1) · Bob ›          what reached the agent (agent-chat-view)
 //   ↗️ #room · @agent (a reply) › what the agent posted (agent-chat)
 const IN_ICON = '↙️'
+// A room message that names the owner (an @mention, or a reply to them):
+// its row says 📣 (here and in agent-chat-view), and a toast shows it.
+const OWNER_ICON = '📣'
 const OUT_ICON = '↗️'
 // Theme colors, so the rows follow a light or dark theme: the rows' text in
 // the theme's gray, and an opened row on its subtle gray (as in agent-chat-view).
@@ -1032,6 +1040,18 @@ const PREVIEW_CHARS = 60
 function firstWords(text: string, max = PREVIEW_CHARS): string {
   const t = text.replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+// A toast for a room message that names the owner, once per message: a
+// redelivery after a reconnect doesn't show it again.
+const toasted = new Set<string>()
+function toastOwner($: $, roomName: string, m: { messageId?: unknown; from?: unknown; text?: unknown }): void {
+  const id = String(m.messageId ?? '')
+  if (!id || toasted.has(id)) return
+  toasted.add(id)
+  if (toasted.size > 500) toasted.delete(toasted.values().next().value!)
+  const words = firstWords(plain(String(m.text ?? '')), 80)
+  $.ui.toast(`${OWNER_ICON} ${plain(String(m.from ?? 'Someone'))} in #${plain(roomName)}${words ? `: ${words}` : ''}`, { timeoutMs: 8000 })
 }
 
 // Quiet mode, kept across sessions like paneOff. Off unless the person turns
