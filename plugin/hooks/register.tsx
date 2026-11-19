@@ -1627,10 +1627,12 @@ export const register: Register = on => {
         .finally(() => { nonces.delete(x.askId); void settlePane($) })
     }
     // A colleague's request: their message (from the server), what the agent
-    // would do (its own words), and Allow / Decline. Hotkeys go to the newest,
-    // and only when no tool call is waiting (that one has y/n).
+    // would do (its own words), and Allow / Decline. No hotkeys: Allow starts a
+    // task, so it takes arrowing onto it and Enter (or a click). The newest card's
+    // Decline holds the focus ring when no tool call is waiting, so a stray
+    // Enter declines.
     const askCard = (x: PaneAsk, i: number) => {
-      const keys = !a && i === pending.length - 1
+      const focusDecline = !a && i === pending.length - 1
       const canAnswer = nonces.has(x.askId)
       return (
         <Box key={`ask-${x.askId}`} flexDirection="column" marginBottom={1}>
@@ -1642,9 +1644,9 @@ export const register: Register = on => {
           {canAnswer
             ? (
               <Box flexDirection="row" flexWrap="wrap">
-                <Button key={`ask-allow-${x.askId}`} hotkey={keys ? 'y' : undefined} variant="primary" onPress={answerAsk(x, 'allow')}>Allow: start the task</Button>
+                <Button key={`ask-allow-${x.askId}`} variant="primary" onPress={answerAsk(x, 'allow')}>Allow: start the task</Button>
                 <Text> </Text>
-                <Button key={`ask-deny-${x.askId}`} hotkey={keys ? 'n' : undefined} onPress={answerAsk(x, 'deny')}>Decline</Button>
+                <Button key={`ask-deny-${x.askId}`} autoFocus={focusDecline || undefined} onPress={answerAsk(x, 'deny')}>Decline</Button>
               </Box>
             )
             : <Text dimColor>Answer it on your Agent Chat tab.</Text>}
