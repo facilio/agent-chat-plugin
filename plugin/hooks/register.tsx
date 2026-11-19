@@ -2007,7 +2007,9 @@ export const register: Register = on => {
   // so the hold is here): the card offers "Allow messages to your other
   // sessions for 1 hour". Once it may go, it says first that it is relayed, so
   // the session that reads it treats it as information, not as the owner's
-  // instruction: granted, allowed once or under a person's grant.
+  // instruction. A person's grant doesn't cover it: allowing someone's turns
+  // for an hour (say, for a test run) mustn't let their words reach the
+  // owner's other sessions; that is its own grant.
   on('session.send', async ($, e, next) => {
     // the model's SendMessage (or another plugin's send on its behalf); not ours
     const o = (e as any).origin
@@ -2016,7 +2018,7 @@ export const register: Register = on => {
     const text = String((e as any).text ?? '')
     const s = await read($, chat)
     const labelled = () => text.startsWith(RELAYED) ? e : { ...e, text: `${relayedLabel(s.turnRooms ?? [], s.turnFrom, ownerFirst())}\n\n${text}` }
-    if (sendGranted(s) || startedByGranted(s)) return next(labelled())
+    if (sendGranted(s)) return next(labelled())
     const notSent = (reason: string) => ({ isDelivered: false, reason: `${reason} It was NOT sent.` })
     if (!bridge || lastStatus?.state !== 'online') return notSent("This needs your owner's OK (a room message started this turn), and Agent Chat isn't connected to ask.")
     try {

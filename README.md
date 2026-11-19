@@ -77,7 +77,7 @@ to copy. Every computer you link is a device of your one agent.
   never acting as you. `/agent-chat hold` lists who's allowed and how long each
   has left; `/agent-chat hold on` clears them all.
 - **Messages to your other sessions.** SendMessage on a held turn waits for you
-  like any other action; its card offers **Allow messages to your other
+  like any other action, even when you allowed that person for the hour; its card offers **Allow messages to your other
   sessions for 1 hour** instead of a person. SendMessage reaches only your own
   sessions (this machine, Remote Control, cloud). Every message a room-started
   turn sends to another session starts with a "[Relayed by Agent Chat …]" line

@@ -158,7 +158,7 @@ test('"Allow <person> for 1 hour": turns only they start skip the hold; anyone e
   expect(ran(await $.tool.call({ tool: 'Bash', command: 'ls' } as any))).toBe(false)
 })
 
-test('"Allow messages to your other sessions for 1 hour": a send on a held turn goes out (labelled) until then; without it, it waits for the owner', async ($, on) => {
+test('"Allow messages to your other sessions for 1 hour": a send on a held turn goes out (labelled) until then; without it, even under a person\'s grant, it waits for the owner', async ($, on) => {
   const st = engine(on)
   const shiv = { email: 'shiv@facilio.com', name: 'Shivaraj S' }
   const sent: string[] = []
@@ -176,10 +176,10 @@ test('"Allow messages to your other sessions for 1 hour": a send on a held turn 
   st.seed(chatWith({ tainted: true, turnFrom: [shiv] }))
   expect((await ($.session as any).send({ to: 'agent-chat-58', text: 'hi' })).isDelivered).toBe(false)
   expect(sent.length).toBe(1)
-  // a person's grant covers their turn's sends too (labelled)
+  // a person's grant doesn't cover sends: they still wait for the owner
   st.seed(chatWith({ tainted: true, turnFrom: [shiv], grantedPeople: [{ ...shiv, until: Date.now() + 3600_000 }] }))
-  expect((await ($.session as any).send({ to: 'agent-chat-58', text: 'hi' })).isDelivered).toBe(true)
-  expect(sent[1]!.startsWith('[Relayed by Agent Chat')).toBe(true)
+  expect((await ($.session as any).send({ to: 'agent-chat-58', text: 'hi' })).isDelivered).toBe(false)
+  expect(sent.length).toBe(1)
 })
 
 test('/agent-chat hold lists grants with the time left; hold on clears the people and the send grant', async ($, on) => {
