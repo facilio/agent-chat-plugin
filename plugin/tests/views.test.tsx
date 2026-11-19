@@ -199,3 +199,59 @@ test('a request waiting alongside a held tool call: both show, the tool call fir
   expect(await ui.find({ type: 'Text', text: /Bob · #ops asks your agent/ })).toBeDefined()
   await ui.unmount()
 })
+
+// Quiet mode. Off unless turned on; kept in $.store for every session.
+test('/agent-chat quiet on|off is kept across sessions and starts off', async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  on('session.version', () => ({ value: { version: '2.1.330', base: '2.1.330' } }))
+  const run = async (args: string) => String(((await $.command.run({ command: 'agent-chat', args } as any)) as any).text)
+  expect(await run('quiet')).toMatch(/^quiet: off/)
+  expect(await run('quiet on')).toMatch(/^Quiet on/)
+  expect(st.store.get('quiet')).toBe(true)
+  expect(await run('quiet')).toMatch(/^quiet: on/)
+  expect(await run('quiet off')).toMatch(/^Quiet off/)
+  expect(st.store.get('quiet')).toBe(false)
+  expect(await run('help')).toMatch(/\/agent-chat quiet <on\|off>/)
+})
+
+// Quiet mode: the agent's own part of a room turn isn't drawn.
+const ROOM_ROWS = (texts: string[], calls: string[]) => ({ shape: 'roomRows-1', value: { texts, calls } })
+
+test("quiet: a room turn's own text and reply/react rows aren't drawn; ctrl+o shows the calls", async ($, on) => {
+  const st = engine(on)
+  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
+  st.seed('chat', chatValue({}))
+  st.seed('roomRows', ROOM_ROWS(['I added a 👍 to "this is really interesting".'], ['toolu_room']))
+  const said = (text: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text, isFirstOfReply: true } }) as any
+  let ui = await $.ui.mount(said('I added a 👍 to  "this is really interesting".\n'))
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
+  ui = await $.ui.mount(said('Your own answer stays.'))
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  const call = (id: string, isExpanded = false) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolUse', requestId: id,
+    props: { tool_use_id: id, tool: 'mcp__agent-chat__react', input: { room_id: 'rm_1', emoji: '👍' }, isRunning: false, isErrored: false, isInterrupted: false, isExpanded } }) as any
+  ui = await $.ui.mount(call('toolu_room'))
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
+  const result = (id: string) => ({ plugin: 'agent-chat', surface: 'terminal', component: 'ToolResult', requestId: id, props: { tool_use_id: id, tool: 'mcp__agent-chat__react', output: 'reacted 👍', isErrored: false } }) as any
+  ui = await $.ui.mount(result('toolu_room'))
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
+  // the result line of a call that isn't a quiet room turn's is drawn
+  ui = await $.ui.mount(result('toolu_mine'))
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  ui = await $.ui.mount({ ...result('toolu_err'), props: { ...result('toolu_err').props, isErrored: true } })
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  ui = await $.ui.mount({ ...result('toolu_bash'), props: { ...result('toolu_bash').props, tool: 'Bash' } })
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+  for (const c of [call('toolu_room', true), call('toolu_mine')]) {
+    ui = await $.ui.mount(c)
+    expect(await ui.find({ type: 'Text', text: /^👍 Reacted in #general$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})

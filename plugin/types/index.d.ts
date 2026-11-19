@@ -29,6 +29,9 @@ export type ChatState = {
   grantedPeople?: Person[];
 };
 export type Person = { email: string; name: string };
+// Quiet mode: rows of the agent's own part of room turns, not drawn in the
+// transcript (its text by a normalized key, its reply/react calls by id).
+export type RoomRows = { texts: string[]; calls: string[] };
 
 // A task: approved work running in an agent-chat:task subagent (tasks.ts).
 export type TaskRec = {
@@ -59,6 +62,6 @@ export type PaneAsk = { askId: string; roomId: string; roomName: string; request
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null>; view: Shaped<PaneView | null>; opened: Shaped<string[]>; asks: Shaped<PaneAsk[]> }
+    'agent-chat': { chat: Shaped<ChatState>; approval: Shaped<Approval | null>; view: Shaped<PaneView | null>; opened: Shaped<string[]>; asks: Shaped<PaneAsk[]>; roomRows: Shaped<RoomRows> }
   }
 }
