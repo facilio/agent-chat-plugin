@@ -1732,13 +1732,13 @@ export const register: Register = on => {
             <Text dimColor>Also on your Agent Chat tab: the first answer wins.</Text>
             {a.grantTo ? <Text dimColor wrap="wrap">{`Allow ${a.grantTo} for this session: turns they start run with your normal permissions, and can act on anything already in this session.`}</Text> : null}
             <Box flexDirection="row" flexWrap="wrap">
-              <Button key="allow" hotkey="y" variant="primary" onPress={answer('allow')}>{a.post ? 'Post it' : 'Allow once'}</Button>
+              <Button key="allow" variant="primary" onPress={answer('allow')}>{a.post ? 'Post it' : 'Allow once'}</Button>
               <Text> </Text>
-              {a.grantTo ? <Button key="person" hotkey="a" onPress={answer('allow', 'person')}>{`Allow ${a.grantTo} for this session`}</Button> : null}
+              {a.grantTo ? <Button key="person" onPress={answer('allow', 'person')}>{`Allow ${a.grantTo} for this session`}</Button> : null}
               {a.grantTo ? <Text> </Text> : null}
-              <Button key="deny" hotkey="n" onPress={answer('deny')}>{a.post ? "Don't post" : 'Deny'}</Button>
+              <Button key="deny" autoFocus onPress={answer('deny')}>{a.post ? "Don't post" : 'Deny'}</Button>
               <Text> </Text>
-              <Button key="terminal" hotkey="p" onPress={answer('terminal')}>Use the normal prompt</Button>
+              <Button key="terminal" onPress={answer('terminal')}>Use the normal prompt</Button>
             </Box>
           </Box>
         ) : null}
