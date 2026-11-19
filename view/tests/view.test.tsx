@@ -18,7 +18,7 @@ test('room messages draw as one line; pressing it shows them, on every surface',
   // the engine's own $.state here: a write redraws the rows that read it
   for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
     const ui = await $.ui.mount(ROW(surface))
-    const line = await ui.find({ type: 'Text', text: /Received 2 messages · #general · Bob/ })
+    const line = await ui.find({ type: 'Text', text: /^↙️ #general \(2\) · Bob ›$/ })
     expect(line).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: /ship at 5/ })).toBeUndefined()
     await ui.press({ key: 'rx-0mabc:2:1' })
@@ -37,7 +37,7 @@ test("short deliveries fold too (the engine marks them expanded); anyone else's 
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   const short = '<agent-chat room_id="rm_1" room="general" from="Bob" message_id="0mxyz" count="1">\nok\n</agent-chat>'
   let ui = await $.ui.mount(ROW('terminal', short, true))
-  expect(await ui.find({ type: 'Text', text: /Received 1 message · #general · Bob/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^↙️ #general \(1\) · Bob ›$/ })).toBeDefined()
   await ui.unmount()
   ui = await $.ui.mount({ ...ROW('terminal'), props: { text: 'hello', origin: { kind: 'composer' }, isExpanded: false } })
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
@@ -49,5 +49,14 @@ test("another plugin's prompt with the same frame is left alone", async ($, on) 
   on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
   const ui = await $.ui.mount({ ...ROW('terminal'), props: { text: DELIVERY, origin: { kind: 'plugin', name: 'someone-else' }, isExpanded: false } })
   expect((await ui.find({ type: 'Text' }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test('a delivery is one gray line with its newest message under it', async ($, on) => {
+  on('state.get', (_: any, e: any, next: any) => e.plugin === 'agent-chat' && e.key === 'rowStyle'
+    ? { value: { value: { shape: 'rowStyle-1', value: 'bare' }, version: 1 } } : next(e))
+  const ui = await $.ui.mount(ROW('terminal'))
+  expect(await ui.find({ type: 'Button', text: /^↙️ #general \(2\) · Bob ›$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Bob: @alice-ai can we ship at 5\?$/ })).toBeDefined()
   await ui.unmount()
 })

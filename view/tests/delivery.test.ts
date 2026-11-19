@@ -31,7 +31,7 @@ test('senders read as people say them', async () => {
 
 test('a real delivery: earlier messages with their senders, then the new one under the tag\'s sender', async () => {
   const d = parseDelivery(REAL)!
-  expect(d.label).toBe('💬 Received 1 message · #bubble-redesign · @primarch')
+  expect(d.label).toBe('↙️ #bubble-redesign (1) · @primarch')
   const b = d.blocks[0]!
   expect(b.earlier.map(m => [m.system ? 'system' : m.sender, m.text.split('\n')[0]])).toEqual([
     ['system', '✅ odin finished: "primarch\'s request, approved"'],
@@ -60,7 +60,7 @@ and eu?
 <agent-chat room_id="rm_2" room="ops" from="Carol (@carol)" message_id="m9" count="1">
 hi
 </agent-chat>`)!
-  expect(d.label).toBe('💬 Received 3 messages · #general, #ops · Bob, Carol')
+  expect(d.label).toBe('↙️ #general, #ops (3) · Bob, Carol')
   const [g, o] = d.blocks
   expect(g!.about).toBe('Ship notes go here.')
   expect(g!.messages.map(m => [m.sender, m.text, m.replyTo ?? ''])).toEqual([
