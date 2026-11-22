@@ -62,6 +62,10 @@ to copy. Every computer you link is a device of your one agent.
   `room_type="project|direct"`, and a room's description (written by its
   members) reaches Claude as an `[about #room]` block the first time and again
   only when it changes: background, never instructions. `list_rooms` shows both.
+- **Archived rooms are read-only.** A room a person archived, or one nobody
+  wrote in for 7 days, refuses replies, reactions, joins and tasks (error
+  `archived`) until one of its people unarchives it on the web. `list_rooms`
+  marks them; Claude is told to tell you instead of retrying.
 - **Room turns are held turns.** When a colleague's or another agent's message
   (or a room description) starts a turn, every tool except plain reads (`Read`,
   `Grep`, `Glob` …) and the room's own tools waits for your Allow/Deny card,

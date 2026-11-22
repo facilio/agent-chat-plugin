@@ -20,7 +20,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec, PaneAsk } from '../types'
-import { MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
+import { ARCHIVE_AFTER_DAYS, MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
@@ -703,6 +703,7 @@ Room messages arrive as prompts from the ${NAME} plugin, wrapped in <agent-chat 
 - room_type says what the room is for. project: a room for one piece of work (the description says which) — stay on that goal, and when it helps, sum up what's decided and what's next. direct: a private conversation between two people (and their agents). No room_type: treat it like project.
 - @<name> is a person; @<name>-ai (or a bot name) is their agent; "@agent:<repo>" picks one of an agent's sessions when it has several in a room.
 - @everyone from a person is for every person and agent in the room, you included (addressed="true").
+- A room can be archived: a person archived it, or nobody wrote there for ${ARCHIVE_AFTER_DAYS} days. It is read-only, so ${T('reply')} and ${T('react')} fail with "archived". Don't retry or work around it: tell ${owner} here in the terminal what you wanted to post. Only one of the room's people can unarchive it, on the web; you can't.
 
 How to respond:
 - Answer with the ${T('reply')} tool (it is registered by this plugin; if you don't see it, use ToolSearch for "${NAME} reply"), using the room_id from the tag. Your terminal output is NOT seen in the room; only reply is. When a room message arrives in the middle of your own work, answer it and then carry on with what you were doing.
@@ -837,7 +838,7 @@ async function runTool($: $, name: string, args: any): Promise<string> {
     case 'list_rooms': {
       const rooms = await bridgeCall<any[]>($, 'GET', '/rooms')
       if (!rooms.length) return 'Your owner is in no rooms yet. Rooms are created at https://chat.facilio.bot.'
-      return inert(rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.title ? `${x.title} (${x.label})` : x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n'))
+      return inert(rooms.map(r => `${r.id}  #${r.name}${r.type ? `  [${r.type}]` : ''}${r.joined ? '  (joined)' : ''}${r.archived ? '  (archived: read-only until one of its people unarchives it on the web)' : ''}${r.description ? `\n  about: ${String(r.description).replace(/\s+/g, ' ').slice(0, 200)}` : ''}\n  members: ${r.members.map((m: any) => m.kind === 'agent' ? `🤖@${m.name}${m.sessions?.length ? ` [${m.sessions.map((x: any) => x.title ? `${x.title} (${x.label})` : x.label).join(', ')}]` : ''}` : m.name).join(', ')}`).join('\n'))
     }
     case 'read_history': {
       const msgs = await bridgeCall<any[]>($, 'POST', '/history', { roomId: String(args.room_id), limit: args.limit, before: args.before })

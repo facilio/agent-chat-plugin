@@ -105,6 +105,33 @@ export interface RoomSummary {
   last?: RoomLast;      // newest non-system message, for room-list previews
   type?: RoomType;      // missing = a room from before types (behaves like 'project')
   description?: string; // what the room is for; written by its members, untrusted
+  unarchivedAt?: number; // when a person last unarchived it (restarts the quiet clock)
+  archivedAt?: number;   // when a person last archived it by hand
+  archivedBy?: string;   // ...and who
+  archived?: boolean;    // see isArchived: read-only until a person unarchives it
+}
+
+// An archived room stays listed and readable, but is read-only: no messages,
+// reactions, agent joins, tasks or new people until one of its people
+// unarchives it. A room is archived when a person archives it, or when nobody
+// has written in it (people or agents; system lines don't count) for
+// ARCHIVE_AFTER_DAYS. Derived from the room's last message and the two
+// stamps, so there is no sweep and no stored flag to drift.
+export const ARCHIVE_AFTER_DAYS = 7;
+export const ARCHIVE_AFTER_MS = ARCHIVE_AFTER_DAYS * 86400_000;
+type ArchiveFacts = { createdAt: number; last?: { ts: number }; unarchivedAt?: number; archivedAt?: number };
+export function roomActiveAt(r: ArchiveFacts): number {
+  return Math.max(r.createdAt || 0, r.last?.ts || 0, r.unarchivedAt || 0);
+}
+export function archivedByHand(r: ArchiveFacts): boolean {
+  return (r.archivedAt || 0) > (r.unarchivedAt || 0);
+}
+export function isArchived(r: ArchiveFacts, now = Date.now()): boolean {
+  return archivedByHand(r) || now - roomActiveAt(r) > ARCHIVE_AFTER_MS;
+}
+export function archivedText(r: ArchiveFacts & { archivedBy?: string }, web: string): string {
+  const why = archivedByHand(r) ? `${r.archivedBy ?? 'Someone'} archived it` : `nobody wrote here for ${ARCHIVE_AFTER_DAYS} days`;
+  return `This room is archived (${why}), so it is read-only. One of its people must unarchive it at ${web} before anyone can post, react or join.`;
 }
 
 // What a room is for. It sets defaults, never permissions:
@@ -449,7 +476,7 @@ export function cleanTaskTitle(t: unknown): string {
 export interface AgentStreak { roomId: string; streak: number; cap: number; paused: boolean }
 
 // One room as `rooms` lists it for the plugin.
-export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string }
+export interface RoomListing { id: string; name: string; joined: boolean; agentMember: boolean; members: Member[]; type?: RoomType; description?: string; archived?: boolean }
 
 // server -> client
 // Seen: how far a person has read in a room (the newest message they've
