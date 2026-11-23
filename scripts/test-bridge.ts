@@ -118,7 +118,7 @@ async function main() {
   const home = mkdtempSync(join(tmpdir(), 'agent-chat-home-'));
   const socketPath = join(mkdtempSync(join(tmpdir(), 'acb-')), 'b.sock');
   const child = spawn('node', [join(__dirname, '..', 'plugin', 'dist', 'bridge.cjs')], {
-    env: { ...process.env, HOME: home, AGENT_CHAT_URL: `ws://127.0.0.1:${wsPort}`, AGENT_CHAT_WEB_URL: `http://127.0.0.1:${webPort}`, AGENT_CHAT_PAIR_POLL_MS: '50', AGENT_CHAT_NO_BROWSER: '1' },
+    env: { ...process.env, HOME: home, AGENT_CHAT_URL: `ws://127.0.0.1:${wsPort}`, AGENT_CHAT_WEB_URL: `http://127.0.0.1:${webPort}`, AGENT_CHAT_PAIR_POLL_MS: '50', AGENT_CHAT_NO_BROWSER: '1', AGENT_CHAT_DEADLINE_MS: '2500' },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   child.stdin.end(JSON.stringify({ secret: SECRET, socketPath, sessionId: 'ss_test_session_1', label: 'agent-chat:main:mbp', emailHint: owner }));
@@ -332,6 +332,22 @@ async function main() {
     assert.deepEqual([sf.action, sf.roomId, sf.text], ['send', 'rm_1', 'us-west-2']);
     reply(sf, { id: 'zz0000006', capped: false });
     assert.equal((await sending).data.capped, false);
+    // a send whose answer is lost: the bridge looks for the post and answers
+    // within its deadline (the module gives up at 30 s), found or not
+    for (const found of [true, false]) {
+      const lostF = nextFrame();
+      const t0 = Date.now();
+      const lost = cmd('POST', '/send', { roomId: 'rm_1', text: `lost ${found}` });
+      const lf = await lostF;
+      assert.equal(lf.action, 'send');
+      const hf2 = await nextFrame();
+      assert.equal(hf2.action, 'history', 'looks in the room for the post');
+      reply(hf2, found ? [{ id: 'zz0000007', roomId: 'rm_1', authorKind: 'agent', authorId: 'ag_a', session: 'agent-chat:main:mbp', text: 'lost true', ts: 1 }] : []);
+      const got = await lost;
+      assert.ok(Date.now() - t0 < 2500 + 500, 'answers within the deadline');
+      if (found) assert.equal(got.data.id, 'zz0000007');
+      else assert.match(String(got.data.error), /read_history/);
+    }
     // a reaction goes straight through; "" (or nothing) takes it off
     for (const [given, sent] of [['👍', '👍'], ['', null]] as const) {
       const rxF = nextFrame();
@@ -412,7 +428,7 @@ async function main() {
     sock.terminate();
     const rehello = await rehelloP;
     assert.deepEqual(rehello.session.rooms, ['rm_1']);
-    assert.equal(rehello.cursors.rm_1, 'zz0000006');
+    assert.equal(rehello.cursors.rm_1, 'zz0000007'); // the found post (lost-answer send) moved it
     assert.equal(rehello.session.summary, 'reviewing pairing', 'summary survives a reconnect');
     assert.equal(connects, 2);
 

@@ -246,14 +246,14 @@ function onIncoming(items: Array<{ message: ChatMessage; wake: boolean; addresse
 
 // This session's own message with this text, posted at or after `since`:
 // from what the room sent back, else from its history once reconnected.
-async function findOwnPost(roomId: string, text: string, since: string): Promise<ChatMessage | null> {
+async function findOwnPost(roomId: string, text: string, since: string, left: () => number): Promise<ChatMessage | null> {
   const mine = (m: ChatMessage) => !!me && m.authorKind === 'agent' && m.authorId === me.id
     && (!session || m.session === session.label) && m.id >= since && m.text.trim() === text.trim();
   const seen = recent.get(roomId)?.find(mine);
   if (seen) return seen;
   try {
-    await whenOnline(15000);
-    const hist = await call({ action: 'history', roomId, limit: 20 }) as ChatMessage[];
+    await whenOnline(Math.min(15000, left()));
+    const hist = await call({ action: 'history', roomId, limit: 20 }, left()) as ChatMessage[];
     return hist.find(mine) ?? null;
   } catch { return null; }
 }
@@ -287,12 +287,25 @@ function request(frame: Record<string, unknown>, timeoutMs = 15000): Promise<Ser
   });
 }
 
-async function call(frame: Record<string, unknown>): Promise<any> {
-  const f = await request(frame);
+async function call(frame: Record<string, unknown>, timeoutMs?: number): Promise<any> {
+  const f = await request(frame, timeoutMs);
   if (f.type === 'error') throw Object.assign(new Error(f.message), { code: f.code });
   if (f.type === 'ack') return f.data;
   return f;
 }
+
+// The module gives each bridge call 30 s (Claude Code's fetch limit). A call
+// that waits for a reconnect and then the server shares one deadline below
+// that, so the bridge always answers first: before 0.18.5 a send could take
+// ~55 s, the module gave up while the post might still go through, and the
+// agent was tempted to post it again.
+const BRIDGE_DEADLINE_MS = Number(process.env.AGENT_CHAT_DEADLINE_MS ?? 25000);
+// kept back from the first try for a second step (finding a post, joining)
+const RESERVE_MS = BRIDGE_DEADLINE_MS / 5;
+const deadline = (ms = BRIDGE_DEADLINE_MS) => {
+  const end = Date.now() + ms;
+  return () => Math.max(1, end - Date.now());
+};
 
 // Resolves once the hello round-trip is done (or the connection gave up).
 let onlineWaiters: Array<() => void> = [];
@@ -569,8 +582,9 @@ const routes: Record<string, Handler> = {
     return { state, pairing };
   },
   'POST /join': async (b) => {
-    await whenOnline(b.waitMs ?? 20000);
-    const room = await call({ action: 'join', room: String(b.room ?? '') }) as RoomSummary;
+    const left = deadline();
+    await whenOnline(Math.max(1, Math.min(Number(b.waitMs ?? 20000), left() - RESERVE_MS)));
+    const room = await call({ action: 'join', room: String(b.room ?? '') }, Math.min(15000, left())) as RoomSummary;
     joined.add(room.id); rooms.set(room.id, room);
     if (!cursors[room.id]) advance(room.id, nowCursor());
     status();
@@ -585,19 +599,21 @@ const routes: Record<string, Handler> = {
   'GET /rooms': async () => (await call({ action: 'rooms' })) as RoomListing[],
   'POST /send': async (b) => {
     const roomId = String(b.roomId), text = String(b.text ?? '');
+    const left = deadline();
     // mid-reconnect, wait a moment rather than fail (the agent would retry)
-    await whenOnline(10000);
+    await whenOnline(Math.min(10000, left() - 2 * RESERVE_MS));
     const since = nowCursor();
     let r: { id: string; capped: boolean };
     try {
-      r = await call({ action: 'send', roomId, text, ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) });
+      // leave time to look for the post if the answer is lost
+      r = await call({ action: 'send', roomId, text, ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) }, Math.max(1, Math.min(10000, left() - RESERVE_MS)));
     } catch (err) {
       // A timeout or a dropped socket doesn't mean the post failed: the server
       // may have stored it before the answer was lost. Look for it before
       // saying it failed, so the agent doesn't post it twice.
       const e = err as Error & { code?: string };
       if (e.code !== 'disconnected' && e.message !== 'Agent Chat did not answer in time') throw err;
-      const posted = await findOwnPost(roomId, text, since);
+      const posted = await findOwnPost(roomId, text, since, left);
       if (posted) { r = { id: posted.id, capped: !!posted.capped }; }
       else throw new Error("Couldn't confirm the post went through (the connection dropped). Check read_history before posting it again.");
     }

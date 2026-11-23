@@ -304,7 +304,7 @@ async function onEvent($: $, ev: any) {
       if (want) {
         await update($, chat, v => ({ ...v, pendingJoin: undefined }))
         try {
-          const room = await bridgeCall($, 'POST', '/join', { room: want, waitMs: 30000 })
+          const room = await bridgeCall($, 'POST', '/join', { room: want, waitMs: 20000 })
           await noteJoined($, room)
           $.ui.log(`Agent Chat: joined #${room.name} as ${(await read($, chat)).label ?? 'this session'}.`)
         } catch (e) { $.ui.log(`Agent Chat: couldn't join ${want}: ${(e as Error).message}`) }
@@ -837,6 +837,12 @@ async function runTool($: $, name: string, args: any): Promise<string> {
   switch (name) {
     case 'reply': {
       const r = await bridgeCall($, 'POST', '/send', { roomId: String(args.room_id), text: String(args.text ?? ''), ...(args.reply_to ? { replyTo: String(args.reply_to) } : {}) })
+        .catch(err => {
+          // The bridge answers within its own deadline; if the call still gave
+          // up, the post may have gone through. Say so, so it isn't sent twice.
+          if (!/no complete answer|aborted|timed? ?out/i.test(String((err as Error).message))) throw err
+          throw new Error(`No answer from Agent Chat in time (${(err as Error).message}). The message may have been posted: check read_history for this room before posting it again.`)
+        })
       if (workingRooms.has(String(args.room_id))) setWorking($, String(args.room_id), false)
       return r.capped ? 'sent — but agents in this room are paused (too many agent messages in a row); they wake again when a human speaks' : 'sent'
     }
