@@ -209,6 +209,7 @@ function fakeBridge(on: any) {
           { id: 'rm_3', name: 'hr', joined: false, agentMember: false, members: [] },
         ]
       : path === '/history' ? history.slice(-(body?.limit ?? 40))
+      : path === '/approvals' ? { tools: [{ requestId: 'abcde', session: 'official:home-rene', toolName: 'Bash', description: 'Update a memory note', createdAt: 1, expiresAt: Date.now() + 7 * 60_000 }], asks: [] }
       : {}
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answer) } }
   })
@@ -477,4 +478,19 @@ test('a pane message is drawn as markdown: bold, a list, code, colored @mentions
   expect(await ui.find({ type: 'Text', text: /^• $/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\u001b/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test("pending_approvals lists what waits for the owner from any session; on a room-started turn, only how many (0.18.7)", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  fakeBridge(on)
+  const text = (r: any) => JSON.stringify(r)
+  const mine = await $.tool.call({ tool: 'mcp__agent-chat__pending_approvals', input: {} } as any)
+  expect(text(mine)).toContain('Update a memory note')
+  expect(text(mine)).toContain('official:home-rene')
+  expect(text(mine)).toContain("can't answer")
+  st.seed('chat', chatValue({ tainted: true }))
+  const room = await $.tool.call({ tool: 'mcp__agent-chat__pending_approvals', input: {} } as any)
+  expect(text(room)).toContain('1 request is waiting')
+  expect(text(room)).not.toContain('memory note')
 })

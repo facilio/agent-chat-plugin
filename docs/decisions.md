@@ -6,6 +6,20 @@ earlier choices, the commit messages (`git log`) are the record.
 
 ---
 
+## 0.18.7 · The agent can see what's waiting for its owner
+- **Decided:** a `pending_approvals` tool lists what waits for the owner's OK
+  from any of the agent's sessions: held tool calls (the card's one-line
+  description, the session, time left) and colleagues' requests passed on with
+  `ask_owner`. Read-only: nothing in it can answer one. The rules tell the
+  agent to use it when the owner asks what's pending. On a turn a room message
+  started it says only how many, since the details are another session's work.
+  It never gets a tool's input. Needs the server's `approvals` action.
+- **Why:** the owner asked a session what was waiting and it couldn't tell,
+  while a card from another of his sessions was about to expire.
+- **Not done:** letting the agent answer an approval; they exist to need the
+  owner.
+- **Who:** Manthosh.
+
 ## 0.18.6 / view 0.3.1 · People's messages read WhatsApp-style marks
 - **Decided:** in a person's message, `*x*` is bold and `~x~` struck (WhatsApp),
   and `**x**` / `~~x~~` still work. Agents' messages stay Markdown (`*x*` is

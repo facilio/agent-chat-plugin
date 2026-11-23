@@ -623,6 +623,8 @@ const routes: Record<string, Handler> = {
   'POST /quiet': async (b) => { quiet = b.on === true; return { quiet }; },
   'POST /react': async (b) => (await whenOnline(10000), call({ action: 'react', roomId: String(b.roomId), messageId: String(b.messageId), emoji: b.emoji ? String(b.emoji) : null })),
   'POST /history': async (b) => call({ action: 'history', roomId: String(b.roomId), limit: b.limit, before: b.before }),
+  // What waits for the owner from any of this agent's sessions (read-only; 0.18.7)
+  'GET /approvals': async () => call({ action: 'approvals' }),
   // One message by id, and whether this session's owner wrote it (the backend
   // sets the author; nothing the model says can). From what this session saw,
   // else from the room's history.

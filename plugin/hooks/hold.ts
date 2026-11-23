@@ -21,10 +21,12 @@ export const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead',
 // This plugin's own tools that a room turn needs. `reply` is guarded on its
 // own; start_task starts work only from a message the backend says the owner
 // wrote (tasks.ts); react puts one emoji on a message in a joined room (it
-// wakes nobody and carries no text); whoami reads this agent's own name.
+// wakes nobody and carries no text); whoami reads this agent's own name;
+// pending_approvals reads what waits for the owner (on a room-started turn,
+// only how many).
 // create_room, add_members and propose_avatar act as the owner, so they are
 // held like any other action.
-export const ROOM_TOOLS = new Set(['reply', 'react', 'list_rooms', 'read_history', 'ask_owner', 'get_attachment', 'start_task', 'whoami'])
+export const ROOM_TOOLS = new Set(['reply', 'react', 'list_rooms', 'read_history', 'ask_owner', 'get_attachment', 'start_task', 'whoami', 'pending_approvals'])
 
 // This plugin's tools that act as the owner: held even inside a task.
 export const OWNER_ACTS = new Set(['create_room', 'add_members', 'propose_avatar'])

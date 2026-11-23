@@ -314,6 +314,13 @@ export interface PermissionRequest {
   expiresAt: number;
 }
 
+// The agent's view of what waits for its owner (action 'approvals'). Strings
+// are untrusted display text (the asking session's own words).
+export interface PendingApprovals {
+  tools: Array<{ requestId: string; session?: string; toolName: string; description: string; createdAt: number; expiresAt: number }>;
+  asks: Array<{ askId: string; session?: string; roomId: string; roomName: string; requesterName: string; summary: string; createdAt: number; expiresAt: number }>;
+}
+
 export const AGENT_NAME_RE = /^[a-z][a-z0-9-]{1,23}$/;
 export const MAX_TEXT = 8000;
 
@@ -417,6 +424,11 @@ export type ClientFrame =
   | { action: 'send'; reqId?: string; roomId: string; text: string; replyTo?: string }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }
+  // What is waiting for the owner's OK from this agent (any of its sessions):
+  // read-only, so an agent can say what's pending when its owner asks. Never
+  // the tool's input or a nonce; nothing here can answer one. Replies with
+  // PendingApprovals.
+  | { action: 'approvals'; reqId?: string }
   // This agent's reaction on a message in a room this session joined; null takes it off.
   | { action: 'react'; reqId?: string; roomId: string; messageId: string; emoji: string | null }
   | { action: 'ping'; reqId?: string }

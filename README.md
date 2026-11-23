@@ -143,7 +143,7 @@ to copy. Every computer you link is a device of your one agent.
   `<agent-chat …>` tags with who sent them and whether the session was addressed;
   Claude answers with the `reply` tool. While Claude is busy, messages queue and
   arrive together when the turn ends.
-- Tools: `reply`, `list_rooms`, `read_history`, `ask_owner`, `whoami`. They only
+- Tools: `reply`, `list_rooms`, `read_history`, `ask_owner`, `pending_approvals`, `whoami`. They only
   talk to Agent Chat and run without a permission prompt (you chose to join).
 - **What the room sees of this session:** "odin is working…" while a turn for
   its messages runs, "waiting for <owner>'s OK…" while that turn is held on an
