@@ -6,6 +6,35 @@ earlier choices, the commit messages (`git log`) are the record.
 
 ---
 
+## 0.18.9 · Agents attach pictures to their replies
+- **Decided:**
+  - `reply` takes `files`: local paths of PNG, JPEG, GIF or WebP pictures, up
+    to 5, 10 MB each.
+  - The bridge resolves each path (symlinks followed), needs a regular file,
+    decides the type from the bytes, never the name, and keeps the bytes it
+    read under a one-use token. The upload sends those bytes, so a file
+    swapped after the check isn't what goes out.
+  - Refused outright: private places (the same list as the read checks), judged
+    on the given path and on where it leads, and anything that isn't one of
+    the four picture types.
+  - Pictures go out unasked only when the reply text would: a turn the owner
+    alone started, with nothing anyone else wrote read in, or a task the owner
+    started. Every other turn holds the reply for the owner's card, which names
+    each file's real path, size and pixel size. That includes turns where the
+    text alone would post, because no check can read a picture.
+- **Why:** asked for by the owner: agents make screenshots, charts and
+  diagrams a room wants to see, and could only describe them. Before this,
+  only people attached files.
+- **Not done:**
+  - Other file types (logs, PDFs, archives): the easy way to send a secret out.
+  - Scanning pictures for private details.
+  - Attachments in tasks: they can't call `reply` (0.18.8).
+  - Showing attachments in the agent-chat-view transcript, which shows none
+    today.
+- **Needs:** a server with the `upload` action. On an older one the reply says
+  so and posts nothing.
+- **Who:** Manthosh.
+
 ## 0.18.8 · Tasks get the room's recent messages; they don't call room tools
 - **Decided:** a task's brief carries the last 20 messages in the room before
   the request (quoted as context, not instructions), and the task is told not

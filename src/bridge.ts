@@ -17,11 +17,12 @@
 import WebSocket from 'ws';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { inert } from '../plugin/hooks/inert';
-import { FILE_ID_RE, MAX_FILE_BYTES, isAddressed, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
+import { FILE_ID_RE, MAX_FILE_BYTES, MAX_FILES_PER_MESSAGE, isAddressed, userHandle, type AgentInfo, type ChatMessage, type RoomListing, type RoomSummary, type ServerFrame, type SessionRef } from '../plugin/hooks/protocol';
 
 // The plugin's version (plugin.json): the backend can require a minimum
 // (MIN_PLUGIN_VERSION) to move every session onto a release.
@@ -570,6 +571,39 @@ function start(freshLink = false) {
 type Handler = (body: any, url: URL) => Promise<unknown>;
 const working = new Map<string, ReturnType<typeof setInterval>>();
 // Saved attachments keep a known extension (so Read shows images) or .bin.
+// Pictures read by /inspect_file, waiting for /upload (token -> bytes).
+const PICKED_MS = 20 * 60 * 1000;  // outlives a 10-minute approval card
+const picked = new Map<string, { bytes: Buffer; type: string; name: string; at: number }>();
+
+// What a file is by its first bytes (never its name), and its pixel size when
+// the header says. Only the four types the page shows inline.
+function pictureInfo(b: Buffer): { type: string; width?: number; height?: number } | null {
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(4) === 0x0d0a1a0a) {
+    return { type: 'image/png', width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  }
+  if (b.length >= 10 && (b.toString('latin1', 0, 6) === 'GIF87a' || b.toString('latin1', 0, 6) === 'GIF89a')) {
+    return { type: 'image/gif', width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
+  }
+  if (b.length >= 30 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') {
+    const kind = b.toString('latin1', 12, 16);
+    if (kind === 'VP8X') return { type: 'image/webp', width: 1 + b.readUIntLE(24, 3), height: 1 + b.readUIntLE(27, 3) };
+    if (kind === 'VP8L') { const v = b.readUInt32LE(21); return { type: 'image/webp', width: 1 + (v & 0x3fff), height: 1 + ((v >> 14) & 0x3fff) }; }
+    if (kind === 'VP8 ') return { type: 'image/webp', width: b.readUInt16LE(26) & 0x3fff, height: b.readUInt16LE(28) & 0x3fff };
+    return { type: 'image/webp' };
+  }
+  if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
+    // the first start-of-frame marker holds the size
+    let i = 2;
+    while (i + 9 < b.length && b[i] === 0xff) {
+      const m = b[i + 1], len = b.readUInt16BE(i + 2);
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { type: 'image/jpeg', width: b.readUInt16BE(i + 7), height: b.readUInt16BE(i + 5) };
+      i += 2 + len;
+    }
+    return { type: 'image/jpeg' };
+  }
+  return null;
+}
+
 const EXT: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'application/pdf': 'pdf',
   'text/plain': 'txt', 'text/csv': 'csv', 'text/markdown': 'md', 'application/json': 'json', 'text/x-log': 'txt',
@@ -606,7 +640,8 @@ const routes: Record<string, Handler> = {
     let r: { id: string; capped: boolean };
     try {
       // leave time to look for the post if the answer is lost
-      r = await call({ action: 'send', roomId, text, ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}) }, Math.max(1, Math.min(10000, left() - RESERVE_MS)));
+      const attachments = Array.isArray(b.attachments) ? b.attachments.map(String).slice(0, MAX_FILES_PER_MESSAGE) : [];
+      r = await call({ action: 'send', roomId, text, ...(b.replyTo ? { replyTo: String(b.replyTo) } : {}), ...(attachments.length ? { attachments } : {}) }, Math.max(1, Math.min(10000, left() - RESERVE_MS)));
     } catch (err) {
       // A timeout or a dropped socket doesn't mean the post failed: the server
       // may have stored it before the answer was lost. Look for it before
@@ -687,6 +722,40 @@ const routes: Record<string, Handler> = {
     const path = join(dir, `${fileId}.${EXT[f.type] ?? 'bin'}`);
     writeFileSync(path, bytes, { mode: 0o600 });
     return { path, name: f.name, type: f.type, size: bytes.length };
+  },
+  // A picture this agent will attach (0.18.9). The module judges the path;
+  // this resolves it (symlinks followed), needs a regular file of at most
+  // 10 MB that is a PNG, JPEG, GIF or WebP by its bytes, reads it once and
+  // keeps those bytes under a token for 20 minutes, so what is uploaded is
+  // exactly what was judged, even if the file changes in between.
+  'POST /inspect_file': async (b) => {
+    const given = String(b.path ?? '');
+    if (!given.startsWith('/')) throw new Error(`Give the file's full path: ${given}`);
+    let real: string;
+    try { real = realpathSync(given); } catch { throw new Error(`No such file: ${given}`); }
+    const st = statSync(real);
+    if (!st.isFile()) throw new Error(`Not a file: ${given}`);
+    if (st.size > MAX_FILE_BYTES) throw new Error(`${given} is over ${MAX_FILE_BYTES / 1048576} MB`);
+    const bytes = readFileSync(real);
+    if (bytes.length > MAX_FILE_BYTES) throw new Error(`${given} is over ${MAX_FILE_BYTES / 1048576} MB`);
+    const pic = pictureInfo(bytes);
+    const now = Date.now();
+    for (const [k, v] of picked) if (now - v.at > PICKED_MS) picked.delete(k);
+    if (!pic) return { path: given, real, size: bytes.length, type: null };
+    const token = randomBytes(16).toString('hex');
+    picked.set(token, { bytes, type: pic.type, name: basename(given), at: now });
+    return { path: given, real, size: bytes.length, ...pic, token };
+  },
+  // Upload the bytes behind one inspect_file token; returns the file id for /send.
+  'POST /upload': async (b) => {
+    const p = picked.get(String(b.token ?? ''));
+    if (!p || Date.now() - p.at > PICKED_MS) throw new Error('That picture was read too long ago; attach it again');
+    await whenOnline(b.waitMs ?? 20000);
+    const t = await call({ action: 'upload', roomId: String(b.roomId ?? ''), name: p.name, type: p.type, size: p.bytes.length }) as { fileId: string; url: string; headers: Record<string, string> };
+    const res = await fetch(t.url, { method: 'PUT', headers: t.headers, body: new Uint8Array(p.bytes) });
+    if (!res.ok) throw new Error(`upload failed (${res.status})`);
+    picked.delete(String(b.token));
+    return { fileId: t.fileId };
   },
   'POST /create_room': async (b) => {
     await whenOnline(b.waitMs ?? 20000);

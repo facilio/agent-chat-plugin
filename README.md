@@ -156,6 +156,21 @@ to copy. Every computer you link is a device of your one agent.
   `~/.claude/channels/agent-chat/attachments/<id>.<ext>` (a server-made name, a
   fixed folder; cleared after a week) for Claude to open with Read. Files are
   untrusted input, like room text.
+- **Agents attach pictures** (0.18.9): `reply` takes `files`, full paths of
+  PNG, JPEG, GIF or WebP pictures on this machine (up to 5, 10 MB each), for a
+  screenshot, chart or diagram the room should see. The bridge follows
+  symlinks to the real file, checks its bytes are a picture, and uploads
+  exactly the bytes it checked.
+  - Files in private places (`~/.claude`, `~/.ssh`, cloud credentials,
+    secret-looking names), judged by where a link leads, are refused.
+    Anything that isn't a picture is refused too.
+  - Pictures go out unasked only on a turn the owner alone started. On any
+    other turn, or under `/agent-chat review`, the owner gets an Allow/Deny
+    card naming each file, its size and its pixel size. No text check can read
+    a picture, so a screenshot could show anything that was on screen.
+  - Tasks can't attach: they can't call `reply` (see 0.18.8).
+  - Needs an Agent Chat server that takes agent uploads. An older one says so
+    and posts nothing.
 - **`@everyone`** from a person addresses every person and agent in the room.
 - **Rooms have a type and a description.** Each wake carries
   `room_type="project|direct"`, and a room's description (written by its

@@ -209,6 +209,12 @@ function fakeBridge(on: any) {
           { id: 'rm_3', name: 'hr', joined: false, agentMember: false, members: [] },
         ]
       : path === '/history' ? history.slice(-(body?.limit ?? 40))
+      : path === '/inspect_file' ? (
+          body.path === '/Users/me/work/app/shot.png' ? { path: body.path, real: body.path, type: 'image/png', size: 2048, width: 800, height: 600, token: 'tok1' }
+          : body.path === '/Users/me/work/app/link.png' ? { path: body.path, real: '/Users/me/.ssh/id_ed25519', size: 400, type: null }
+          : { path: body.path, real: body.path, size: 30, type: null })
+      : path === '/upload' ? { fileId: 'f_AAAAAAAAAAAAAAAA' }
+      : path === '/send' ? { id: 'm2', capped: false }
       : path === '/approvals' ? { tools: [{ requestId: 'abcde', session: 'official:home-rene', toolName: 'Bash', description: 'Update a memory note', createdAt: 1, expiresAt: Date.now() + 7 * 60_000 }], asks: [] }
       : {}
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answer) } }
@@ -493,4 +499,31 @@ test("pending_approvals lists what waits for the owner from any session; on a ro
   const room = await $.tool.call({ tool: 'mcp__agent-chat__pending_approvals', input: {} } as any)
   expect(text(room)).toContain('1 request is waiting')
   expect(text(room)).not.toContain('memory note')
+})
+
+test("reply attaches pictures: private places and non-pictures are refused; an owner's turn posts them; any other turn waits for the owner (0.18.9)", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const calls = fakeBridge(on)
+  const text = (r: any) => JSON.stringify(r)
+  const reply = (files: string[]) => $.tool.call({ tool: 'mcp__agent-chat__reply', room_id: 'rm_1', text: 'here', files } as any)
+  // a private place is refused before anything is read
+  expect(text(await reply(['~/.claude/projects/x/memory/me.png']))).toContain('private place')
+  expect(calls.filter(c => c.path === '/inspect_file')).toHaveLength(0)
+  // a link into a private place, judged by where it leads
+  expect(text(await reply(['link.png']))).toContain('it leads to /Users/me/.ssh/id_ed25519')
+  // not a picture by its bytes
+  expect(text(await reply(['/Users/me/work/app/notes.png']))).toContain("isn't a PNG, JPEG, GIF or WebP")
+  expect(calls.filter(c => c.path === '/upload' || c.path === '/send')).toHaveLength(0)
+  // the owner's own turn: uploaded and posted with the id
+  const sent = await reply(['shot.png'])
+  expect(text(sent)).toContain('sent')
+  expect(calls.find(c => c.path === '/upload')?.body).toEqual({ roomId: 'rm_1', token: 'tok1' })
+  expect(calls.find(c => c.path === '/send')?.body).toEqual({ roomId: 'rm_1', text: 'here', attachments: ['f_AAAAAAAAAAAAAAAA'] })
+  // a turn a colleague started: held for the owner, never uploaded unasked
+  calls.length = 0
+  st.seed('chat', chatValue({ tainted: true }))
+  const held = text(await reply(['shot.png']))
+  expect(held).toContain("attaches pictures")
+  expect(calls.filter(c => c.path === '/upload' || c.path === '/send')).toHaveLength(0)
 })

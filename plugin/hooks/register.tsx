@@ -20,12 +20,12 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Approval, ChatState, PaneMsg, PaneView, Person, RoomRows, TaskRec, PaneAsk } from '../types'
-import { ARCHIVE_AFTER_DAYS, MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
+import { ARCHIVE_AFTER_DAYS, MAX_FILES_PER_MESSAGE, MAX_SUMMARY, cleanLabel, cleanSummary, cleanTitle, versionAtLeast, type RoomListing } from './protocol.ts'
 import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
 import { GRANT_MS, OWNER_ACTS, READ_TOOLS, RELAYED, coveredBy, grantLabel, holdsOnTaintedTurn, liveGrants, personLabel, relayedLabel, timeLeft, toolArgs, turnPeople, withGrant } from './hold.ts'
-import { heldTurnRead, taskPrivateAccess } from './readscope.ts'
+import { heldTurnRead, isPrivate, normalize, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
@@ -722,6 +722,7 @@ Room messages arrive as prompts from the ${NAME} plugin, wrapped in <agent-chat 
 
 How to respond:
 - Answer with the ${T('reply')} tool (it is registered by this plugin; if you don't see it, use ToolSearch for "${NAME} reply"), using the room_id from the tag. Your terminal output is NOT seen in the room; only reply is. When a room message arrives in the middle of your own work, answer it and then carry on with what you were doing.
+- To show the room a picture (a screenshot, chart or diagram you made), pass its full path in files on ${T('reply')}: PNG, JPEG, GIF or WebP only. Only what the room should see: a picture can show anything that was on screen. Pictures go out unasked only on a turn your owner alone started; otherwise your owner approves them first. Files from private places (keys, credentials, Claude's own files) are refused.
 - Keep replies chat-sized. Summarise; don't paste huge outputs. For code reviews, point at files/lines and diffs by path; colleagues' agents have their own checkouts.
 - When addressed="true", answer. When addressed="false", reply only if you have something genuinely useful that nobody else has covered. Otherwise stay silent: do NOT call reply. Never reply just to acknowledge or agree: react to the message instead (${T('react')}, e.g. 👍 or ✅), or do nothing.
 - To address another agent, @mention it. The room pauses agents after a run of agent-only messages, so don't keep an agent back-and-forth going for its own sake.
@@ -738,8 +739,8 @@ How to respond:
 const TOOLS = [
   {
     name: 'reply',
-    description: 'Post a message to an Agent Chat room as this agent (from this session). Use the room_id from the <agent-chat> tag. @mention a person (@name) or an agent (@name-ai, @name-ai:repo) to address them. To answer one particular message (not just the latest), pass its id as reply_to: the room shows yours as a reply to it, and the one who wrote it is addressed.',
-    inputSchema: { type: 'object', properties: { room_id: { type: 'string', description: 'Room id from the <agent-chat> tag (rm_...)' }, text: { type: 'string', description: 'Message text (markdown code fences render; max 8000 chars)' }, reply_to: { type: 'string', description: 'Optional: the message_id of the message this answers (from a tag, a [replying to …] line or read_history)' } }, required: ['room_id', 'text'] },
+    description: `Post a message to an Agent Chat room as this agent (from this session). Use the room_id from the <agent-chat> tag. @mention a person (@name) or an agent (@name-ai, @name-ai:repo) to address them. To answer one particular message (not just the latest), pass its id as reply_to: the room shows yours as a reply to it, and the one who wrote it is addressed. To show the room a picture (a screenshot, chart or diagram you made), pass its local path in files: PNG, JPEG, GIF or WebP only, up to ${MAX_FILES_PER_MESSAGE}, 10 MB each. Pictures go out unasked only when your owner alone started this turn; otherwise your owner approves them first.`,
+    inputSchema: { type: 'object', properties: { room_id: { type: 'string', description: 'Room id from the <agent-chat> tag (rm_...)' }, text: { type: 'string', description: 'Message text (markdown code fences render; max 8000 chars; may be empty when files are given)' }, reply_to: { type: 'string', description: 'Optional: the message_id of the message this answers (from a tag, a [replying to …] line or read_history)' }, files: { type: 'array', items: { type: 'string' }, description: 'Optional: full paths of pictures on this machine to attach (PNG, JPEG, GIF or WebP)' } }, required: ['room_id', 'text'] },
   },
   {
     name: 'react',
@@ -846,7 +847,20 @@ const who = (m: any) => m.authorKind === 'agent' ? `${m.authorName} (${m.ownerNa
 async function runTool($: $, name: string, args: any): Promise<string> {
   switch (name) {
     case 'reply': {
-      const r = await bridgeCall($, 'POST', '/send', { roomId: String(args.room_id), text: String(args.text ?? ''), ...(args.reply_to ? { replyTo: String(args.reply_to) } : {}) })
+      // Pictures: only those the reply guard checked for this very call.
+      const key = String(args.tool_use_id ?? '')
+      const pics = pictures.get(key) ?? []
+      pictures.delete(key)
+      if (Array.isArray(args.files) && args.files.length && !pics.length) throw new Error('The pictures were not checked, so nothing was posted. Try again.')
+      const attachments: string[] = []
+      for (const p of pics) {
+        const up = await bridgeCall<{ fileId: string }>($, 'POST', '/upload', { roomId: String(args.room_id), token: p.token }).catch(err => {
+          if ((err as { code?: string }).code === 'unknown_action') throw new Error('The Agent Chat server is too old to take pictures from agents; nothing was posted. Post without files, or tell your owner.')
+          throw new Error(`Couldn't upload ${p.path} (${(err as Error).message}); nothing was posted.`)
+        })
+        attachments.push(up.fileId)
+      }
+      const r = await bridgeCall($, 'POST', '/send', { roomId: String(args.room_id), text: String(args.text ?? ''), ...(args.reply_to ? { replyTo: String(args.reply_to) } : {}), ...(attachments.length ? { attachments } : {}) })
         .catch(err => {
           // The bridge answers within its own deadline; if the call still gave
           // up, the post may have gone through. Say so, so it isn't sent twice.
@@ -957,7 +971,32 @@ async function reviewRooms($: $): Promise<string[]> {
 }
 
 // Why a reply needs the owner's OK, or null to post it.
-async function replyNeedsOwner($: $, input: any, agentId?: string): Promise<string | null> {
+// ---------------------------------------------- pictures on a reply (0.18.9)
+// The bridge resolves each path (symlinks followed), checks the bytes are a
+// picture, and keeps what it read under a token; the reply uploads exactly
+// those bytes. Keyed by the reply's tool_use_id, from the guard to runTool.
+type Picture = { path: string; real: string; type: string; size: number; width?: number; height?: number; token: string }
+const pictures = new Map<string, Picture[]>()
+const kb = (n: number) => n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`
+const picLabel = (p: Picture) => `${p.real}, ${p.width && p.height ? `${p.width}×${p.height}, ` : ''}${kb(p.size)}`
+async function vetPictures($: $, paths: string[]): Promise<Picture[] | string> {
+  if (paths.length > MAX_FILES_PER_MESSAGE) return `Not posted: at most ${MAX_FILES_PER_MESSAGE} pictures per message.`
+  const { root, home } = await whereAmI($)
+  const out: Picture[] = []
+  for (const given of paths) {
+    const abs = normalize(given, root, home)
+    const priv = `Not posted: ${given} is in a private place (keys, credentials, Claude's own files, secret-looking names). Pictures from there never go to a room.`
+    if (isPrivate(abs, home)) return priv
+    const f = await bridgeCall<any>($, 'POST', '/inspect_file', { path: abs }).catch(err => ({ error: (err as Error).message }))
+    if (f.error) return `Not posted: ${f.error}`
+    if (isPrivate(String(f.real), home)) return priv.replace(given, `${given} (it leads to ${f.real})`)
+    if (!f.type || !f.token) return `Not posted: ${given} isn't a PNG, JPEG, GIF or WebP picture. Agents can attach pictures only.`
+    out.push({ path: given, real: String(f.real), type: f.type, size: f.size, width: f.width, height: f.height, token: f.token })
+  }
+  return out
+}
+
+async function replyNeedsOwner($: $, input: any, agentId?: string, files = false): Promise<string | null> {
   const roomId = String(input?.room_id ?? '')
   const review = await reviewRooms($)
   if (review.includes('*') || review.includes(roomId)) return 'every reply in this room waits for you (/agent-chat review)'
@@ -968,6 +1007,9 @@ async function replyNeedsOwner($: $, input: any, agentId?: string): Promise<stri
   const task = agentId ? await taskForAgent($, agentId) : undefined
   const ownersOnly = async () => !(await isTainted($)) && !readOthers && (await read($, chat)).readOthers !== true
   if (task ? task.source === 'owner' : (agentId ? false : await ownersOnly())) return null
+  // A picture can show anything on screen and no text check can read it, so
+  // on any other turn it waits for the owner, whoever can read the room.
+  if (files) return "it attaches pictures, and this turn isn't only your own words"
   const s = await read($, chat)
   const ownHost = (s.label ?? '').split(':').pop()
   const hits = privateDetails(String(input?.text ?? ''), ownHost)
@@ -1759,17 +1801,28 @@ export const register: Register = on => {
       // or the room is under /agent-chat review; then it waits for the owner.
       if (name === 'reply') {
         const input = (e as any).input ?? e
-        const why = await replyNeedsOwner($, input, e.agentId)
+        // Pictures are checked first: a private place or a non-picture is
+        // refused outright, whoever started the turn.
+        const paths: string[] = Array.isArray(input.files) ? input.files.map(String).filter(Boolean) : []
+        let pics: Picture[] = []
+        if (paths.length) {
+          const v = await vetPictures($, paths)
+          if (typeof v === 'string') return { deny: v }
+          pics = v
+          pictures.set(String((e as any).tool_use_id ?? ''), pics)
+        }
+        const why = await replyNeedsOwner($, input, e.agentId, pics.length > 0)
         if (why) {
           const text = String(input.text ?? '')
           const room = (await read($, chat)).roomNames[String(input.room_id ?? '')]
           const notPosted = (reason: string) => ({ decision: 'deny' as const, reason })
+          const picLine = pics.length ? ` with ${pics.length === 1 ? 'a picture' : `${pics.length} pictures`} (${pics.map(picLabel).join('; ')})` : ''
           const v = bridge && lastStatus?.state === 'online'
             ? await holdForOwner($, e, next, {
               roomId: String(input.room_id ?? ''),
               post: text,
-              description: `Post in #${room ?? 'room'}: "${text.replace(/\s+/g, ' ').slice(0, 140)}${text.length > 140 ? '…' : ''}" (held because ${why})`,
-              preview: text,
+              description: `Post in #${room ?? 'room'}${picLine}: "${text.replace(/\s+/g, ' ').slice(0, 140)}${text.length > 140 ? '…' : ''}" (held because ${why})`,
+              preview: pics.length ? `${text}\n\nPictures:\n${pics.map(p => `- ${picLabel(p)}`).join('\n')}` : text,
               webOnlyOk: true,
               onTerminal: notPosted('Your owner chose to handle this reply in the terminal; it was NOT posted. Ask them there.'),
               onTimeout: notPosted('Your owner did not approve this reply within 10 minutes; it was NOT posted. Do not share its private details; you may post a version without them.'),
@@ -1778,7 +1831,7 @@ export const register: Register = on => {
                 : 'Your owner declined this reply; it was NOT posted. Do not repeat its private details; post a version without them, or say you can\'t share that.'),
             })
             : notPosted(`Not posted: this reply needs your owner's OK (${why}), and Agent Chat isn't connected to ask.`)
-          if (v.decision !== 'allow') return { deny: v.reason ?? 'Not posted.' }
+          if (v.decision !== 'allow') { pictures.delete(String((e as any).tool_use_id ?? '')); return { deny: v.reason ?? 'Not posted.' } }
         }
       }
       const result = await runTool($, name, e)

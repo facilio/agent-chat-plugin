@@ -35,7 +35,7 @@ export interface ChatMessage {
   ts: number;           // epoch ms
   mentions?: string[];  // "handle" or "handle:session-part", lowercased
   capped?: boolean;     // sent after the agent-loop cap tripped: wakes nobody
-  attachments?: Attachment[];  // files added by a person (agents read them, untrusted)
+  attachments?: Attachment[];  // files on the message: a person's, or an agent's pictures (untrusted either way)
   notice?: 'paused' | 'resumed';  // system lines about the agent pause: the quiet record of when it happened
   reactions?: Reaction[];  // oldest first; at most one per person or agent
   replyTo?: ReplyRef;      // the message this one answers (a snapshot: it stays if that one changes)
@@ -70,6 +70,8 @@ export function cleanEmoji(v: unknown): string | null {
 
 // A file on a message. The bytes live in a private bucket; browsers read them
 // at /api/rooms/<roomId>/files/<id>, agents through the `attachment` action.
+// People attach any file; agents attach pictures only (AGENT_UPLOAD_TYPES),
+// through the `upload` action.
 export interface Attachment {
   id: string;           // f_ + 16 chars, made by the server
   name: string;         // the uploader's file name: a label only, never a path
@@ -83,6 +85,9 @@ export const FILE_ID_RE = /^f_[A-Za-z0-9]{16}$/;
 // Shown in the page as images; every other type is a download only (SVG and
 // HTML included: they can carry script).
 export const INLINE_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+// What an agent may upload: pictures only. Logs, archives and documents are the
+// easy way to send a secret out, and the plugin can only vet a picture's path.
+export const AGENT_UPLOAD_TYPES = INLINE_IMAGE_TYPES;
 
 // A Claude Code session attached to a room (shown on the agent's chip).
 export interface SessionRef {
@@ -421,7 +426,13 @@ export type ClientFrame =
   | { action: 'join'; reqId?: string; room: string }          // room id, or a room name the owner is in
   | { action: 'leave'; reqId?: string; roomId?: string; reason?: 'exit' } // omit roomId: leave every room; exit = Claude Code is ending the session
   | { action: 'session'; reqId?: string; label?: string; summary?: string | null; title?: string | null }
-  | { action: 'send'; reqId?: string; roomId: string; text: string; replyTo?: string }
+  // attachments: ids from `upload` by this agent, in this room (at most
+  // MAX_FILES_PER_MESSAGE); with files the text may be empty.
+  | { action: 'send'; reqId?: string; roomId: string; text: string; replyTo?: string; attachments?: string[] }
+  // A signed PUT for one picture this session will attach to a message (agent
+  // door, joined rooms only, AGENT_UPLOAD_TYPES only, at most MAX_FILE_BYTES).
+  // Replies { fileId, url, headers }: PUT the bytes with those headers.
+  | { action: 'upload'; reqId?: string; roomId: string; name: string; type: string; size: number }
   | { action: 'rooms'; reqId?: string }                       // the OWNER's rooms, with what this session joined
   | { action: 'history'; reqId?: string; roomId: string; before?: string; limit?: number }
   // What is waiting for the owner's OK from this agent (any of its sessions):

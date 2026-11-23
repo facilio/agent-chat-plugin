@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -355,6 +355,45 @@ async function main() {
       assert.ok(Date.now() - t0 < 2500 + 500, 'answers within the deadline');
       if (found) assert.equal(got.data.id, 'zz0000007');
       else assert.match(String(got.data.error), /read_history/);
+    }
+    // pictures an agent attaches: judged by real path and bytes; the bytes read are the bytes sent
+    {
+      const dir = mkdtempSync(join(tmpdir(), 'acpics-'));
+      const png = Buffer.concat([Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), Buffer.from([0, 0, 3, 0, 0, 0, 2, 0]), Buffer.alloc(20)]);
+      writeFileSync(join(dir, 'chart.png'), png);
+      writeFileSync(join(dir, 'keys.png'), 'AWS_SECRET_ACCESS_KEY=abc');
+      symlinkSync(join(dir, 'chart.png'), join(dir, 'link.png'));
+      const ok = (await cmd('POST', '/inspect_file', { path: join(dir, 'link.png') })).data;
+      assert.equal(ok.real, realpathSync(join(dir, 'chart.png')), 'judged by the resolved path, not the link');
+      assert.deepEqual([ok.type, ok.width, ok.height, ok.size], ['image/png', 768, 512, png.length]);
+      assert.match(ok.token, /^[0-9a-f]{32}$/);
+      const fake = (await cmd('POST', '/inspect_file', { path: join(dir, 'keys.png') })).data;
+      assert.deepEqual([fake.type, fake.token], [null, undefined], 'what a file is comes from its bytes, not its name');
+      assert.match((await cmd('POST', '/inspect_file', { path: 'chart.png' })).data.error, /full path/);
+      assert.match((await cmd('POST', '/inspect_file', { path: dir })).data.error, /Not a file/);
+      assert.match((await cmd('POST', '/inspect_file', { path: join(dir, 'gone.png') })).data.error, /No such file/);
+      // the file changes after it was judged: what was read goes up
+      writeFileSync(join(dir, 'chart.png'), 'swapped');
+      let putBody = Buffer.alloc(0), putHeaders: http.IncomingHttpHeaders = {};
+      const s3 = http.createServer((req, res) => { const parts: Buffer[] = []; req.on('data', (c) => parts.push(c)); req.on('end', () => { putBody = Buffer.concat(parts); putHeaders = req.headers; res.end(); }); });
+      await new Promise<void>((r) => s3.listen(0, '127.0.0.1', r));
+      const upF = nextFrame();
+      const uploading = cmd('POST', '/upload', { roomId: 'rm_1', token: ok.token });
+      const uf = await upF;
+      assert.deepEqual([uf.action, uf.roomId, uf.name, uf.type, uf.size], ['upload', 'rm_1', 'link.png', 'image/png', png.length]);
+      reply(uf, { fileId: 'f_AAAAAAAAAAAAAAAA', url: `http://127.0.0.1:${(s3.address() as any).port}/put`, headers: { 'content-type': 'image/png', 'x-amz-meta-by': 'agent:ag_1' } });
+      assert.equal((await uploading).data.fileId, 'f_AAAAAAAAAAAAAAAA');
+      assert.ok(putBody.equals(png), 'the bytes that were judged, not the swapped file');
+      assert.equal(putHeaders['x-amz-meta-by'], 'agent:ag_1');
+      assert.match((await cmd('POST', '/upload', { roomId: 'rm_1', token: ok.token })).data.error, /attach it again/, 'a token is used once');
+      s3.close();
+      // /send carries the ids
+      const sendF = nextFrame();
+      const sendingPic = cmd('POST', '/send', { roomId: 'rm_1', text: '', attachments: ['f_AAAAAAAAAAAAAAAA'] });
+      const sf = await sendF;
+      assert.deepEqual([sf.action, sf.text, sf.attachments], ['send', '', ['f_AAAAAAAAAAAAAAAA']]);
+      reply(sf, { id: 'zz00000065', capped: false });
+      assert.equal((await sendingPic).data.id, 'zz00000065');
     }
     // a reaction goes straight through; "" (or nothing) takes it off
     for (const [given, sent] of [['👍', '👍'], ['', null]] as const) {
