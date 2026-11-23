@@ -89,7 +89,7 @@ test("another agent's peer message doesn't count as a task's report", async ($, 
 
 test('after a plugin update (empty state), the session comes back to its rooms', async ($, on) => {
   const st = engine(on)
-  const store = new Map<string, unknown>([['sessions', { cc1: { sessionId: 'ss_kept', joined: ['rm_9'], roomNames: { rm_9: 'kept' }, cursors: {}, at: 1 } }]])
+  const store = new Map<string, unknown>([['sessions', { cc1: { sessionId: 'ss_kept', joined: ['rm_9'], roomNames: { rm_9: 'kept' }, cursors: { rm_9: 'm_last' }, label: 'repo:main:box', at: 1 } }]])
   on('store.get', (_: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', (_: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
   on('session.id', () => ({ value: 'cc1' }))
@@ -105,6 +105,9 @@ test('after a plugin update (empty state), the session comes back to its rooms',
   const got: any = st.get()
   expect(got?.value?.sessionId).toBe('ss_kept')
   expect(got?.value?.joined).toEqual(['rm_9'])
+  // the bridge says hello from the last message seen, not from the last join (0.18.4)
+  expect(got?.value?.cursors).toEqual({ rm_9: 'm_last' })
+  expect(got?.value?.label).toBe('repo:main:box')
 })
 
 test("a held turn reads its own project unasked; anything outside it, or private data, waits", async ($, on) => {

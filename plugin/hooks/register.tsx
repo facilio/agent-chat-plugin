@@ -130,14 +130,14 @@ async function state($: $): Promise<ChatState> {
 // are also kept in $.store (the plugin's own file, which outlives versions),
 // under Claude Code's session id, and put back when state comes up empty.
 const SESSIONS_KEPT = 30
-type Kept = { sessionId: string; joined: string[]; roomNames: Record<string, string>; cursors: Record<string, string>; pinnedLabel?: string; at: number }
+type Kept = { sessionId: string; joined: string[]; roomNames: Record<string, string>; cursors: Record<string, string>; pinnedLabel?: string; label?: string; at: number }
 async function remember($: $) {
   try {
     const cc = await $.session.id()
     const s = await read($, chat)
     if (!s.sessionId) return
     const all = { ...((await $.store.get('sessions')) as Record<string, Kept> | undefined ?? {}) }
-    all[cc] = { sessionId: s.sessionId, joined: s.joined, roomNames: s.roomNames, cursors: s.cursors, pinnedLabel: s.pinnedLabel, at: Date.now() }
+    all[cc] = { sessionId: s.sessionId, joined: s.joined, roomNames: s.roomNames, cursors: s.cursors, pinnedLabel: s.pinnedLabel, label: s.label, at: Date.now() }
     const keep = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, SESSIONS_KEPT)
     await $.store.set('sessions', Object.fromEntries(keep))
   } catch { /* best effort */ }
@@ -145,6 +145,15 @@ async function remember($: $) {
 // A join lands in state at once, not only when the bridge's next status event
 // does: the rules handed to the model right after a join list the rooms from
 // state (they said "rooms ()" before), and the room is remembered for updates.
+// Cursors move with every message, so they are kept at most once a second
+// (the last move is never dropped). Before 0.18.4 they were kept only on a
+// join, so a resumed session said hello with the cursor from its last join and
+// was sent every message since again, as new turns.
+let rememberTimer: ReturnType<typeof setTimeout> | undefined
+function rememberSoon($: $) {
+  if (rememberTimer) return
+  rememberTimer = setTimeout(() => { rememberTimer = undefined; void remember($) }, 1000)
+}
 async function noteJoined($: $, room: { id: string; name: string }) {
   await update($, chat, v => ({ ...v, joined: v.joined.includes(room.id) ? v.joined : [...v.joined, room.id], roomNames: { ...v.roomNames, [room.id]: room.name } }))
   await remember($)
@@ -155,7 +164,7 @@ async function restore($: $) {
     if (s.sessionId) return
     const kept = ((await $.store.get('sessions')) as Record<string, Kept> | undefined)?.[await $.session.id()]
     if (!kept?.sessionId) return
-    await update($, chat, v => v.sessionId ? v : ({ ...v, sessionId: kept.sessionId, joined: kept.joined ?? [], roomNames: kept.roomNames ?? {}, cursors: kept.cursors ?? {}, pinnedLabel: kept.pinnedLabel }))
+    await update($, chat, v => v.sessionId ? v : ({ ...v, sessionId: kept.sessionId, joined: kept.joined ?? [], roomNames: kept.roomNames ?? {}, cursors: kept.cursors ?? {}, pinnedLabel: kept.pinnedLabel, label: v.label ?? kept.label }))
   } catch { /* best effort */ }
 }
 
@@ -267,6 +276,7 @@ async function onEvent($: $, ev: any) {
     }
     case 'cursor':
       await update($, chat, v => ({ ...v, cursors: { ...v.cursors, [ev.roomId]: ev.id } }))
+      rememberSoon($)
       viewChanged($, String(ev.roomId))
       return
     case 'heard': {
