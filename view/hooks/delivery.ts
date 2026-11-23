@@ -13,6 +13,19 @@
 // system line starts with "· ". A message's text runs until the next sender.
 
 export type RoomMsg = { sender: string; full?: string; text: string; system?: boolean; replyTo?: string }
+
+// A person's sender reads "Name (@handle)"; an agent's "@handle (Owner's agent, …)".
+export const fromPerson = (m: RoomMsg) => !m.system && !!m.full && !m.full.startsWith('@') && !/'s agent\b/.test(m.full)
+
+// People write the WhatsApp way (*bold*, ~struck~); the transcript's Markdown
+// reads *x* as italic and a lone ~ as a tilde. So a person's text is given to
+// it as **x** and ~~x~~ first. Code (`x`, fences) is left alone, and a mark
+// needs text against it and no word around it (snake_case, ~5 min, a*b stay).
+export function whatsappToMarkdown(text: string): string {
+  return text.split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => i % 2 ? part : part
+    .replace(/(^|[^\w*])\*(?=[^\s*])([^\n*]*?[^\s*])\*(?![\w*])/g, '$1**$2**')
+    .replace(/(^|[^\w~])~(?=[^\s~])([^\n~]*?[^\s~])~(?![\w~])/g, '$1~~$2~~')).join('')
+}
 export type RoomBlock = { room: string; about?: string; notes: string[]; earlier: RoomMsg[]; messages: RoomMsg[]; decision?: string }
 export type Delivery = { key: string; label: string; blocks: RoomBlock[]; firstLine?: string }
 

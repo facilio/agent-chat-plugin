@@ -67,3 +67,12 @@ test("a link whose label names another site shows the host it really opens", () 
   expect(parseInline('[GitHub.com/x](https://www.github.com/x)', ctx)).toEqual([{ text: 'GitHub.com/x', href: 'https://www.github.com/x' }])
   expect(parseInline('https://github.com/x', ctx)).toEqual([{ text: 'https://github.com/x', href: 'https://github.com/x' }])
 })
+
+test("a person's message reads WhatsApp marks; an agent's stays Markdown (0.18.6)", () => {
+  const person = { ...ctx, person: true }
+  expect(parseInline('*bold* _it_ ~gone~', person)).toEqual([
+    { bold: true, text: 'bold' }, { text: ' ' }, { italic: true, text: 'it' }, { text: ' ' }, { strike: true, text: 'gone' }])
+  expect(parseInline('**b** ~~s~~', person)).toEqual([{ bold: true, text: 'b' }, { text: ' ' }, { strike: true, text: 's' }])
+  expect(parseInline('*it* ~not~', ctx)).toEqual([{ italic: true, text: 'it' }, { text: ' ~not~' }])
+  expect(parseInline('~5 min, ~/path/~x and my_var * 2', person)).toEqual([{ text: '~5 min, ~/path/~x and my_var * 2' }])
+})

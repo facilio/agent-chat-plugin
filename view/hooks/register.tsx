@@ -7,7 +7,7 @@
 // the delivery as agent-chat sent it.
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
-import { ROW_FG, parseDelivery, type Delivery, type RoomBlock, type RoomMsg } from './delivery.ts'
+import { ROW_FG, fromPerson, parseDelivery, whatsappToMarkdown, type Delivery, type RoomBlock, type RoomMsg } from './delivery.ts'
 
 const SENDER_PLUGIN = 'agent-chat'
 const opened = atom({ plugin: 'agent-chat-view', key: 'opened' } as const, [] as string[], { shape: 'opened-1' })
@@ -27,7 +27,7 @@ function drawMsg(ui: any, m: RoomMsg, key: string, dim?: boolean) {
     <Box key={key} flexDirection="column" marginTop={1}>
       <Text bold={!dim} dimColor={dim}>{plain(m.sender) || 'Someone'}</Text>
       {m.replyTo ? <Text dimColor wrap="wrap">↪ replying to {plain(m.replyTo)}</Text> : null}
-      {mdBody(ui, m.text, dim)}
+      {mdBody(ui, fromPerson(m) ? whatsappToMarkdown(m.text) : m.text, dim)}
     </Box>
   )
 }

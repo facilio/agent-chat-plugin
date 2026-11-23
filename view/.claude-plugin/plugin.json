@@ -1,6 +1,6 @@
 {
   "name": "agent-chat-view",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Draws Agent Chat's room messages in the transcript: one line each (💬 Received 3 messages · #room ›), opening to a readable chat. Companion to agent-chat.",
   "author": {
     "name": "Facilio"

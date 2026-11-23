@@ -60,7 +60,7 @@ export type TaskRec = {
 export type Approval = { requestId: string; tool: string; description: string; preview: string; grantTo?: string; roomId?: string; post?: string };
 
 // The room the pane shows as a chat (display only: never reaches the model).
-export type PaneMsg = { id: string; who: string; mine: boolean; system?: boolean; text: string; ts: number; reactions?: string };
+export type PaneMsg = { id: string; who: string; mine: boolean; system?: boolean; person?: boolean; text: string; ts: number; reactions?: string };  // person: a person wrote it (WhatsApp-style marks)
 // agents: names seen as agent authors in the room (lowercase), so the pane
 // colors an @mention of an agent apart from one of a person.
 export type PaneView = { roomId: string; roomName: string; messages: PaneMsg[]; pinned?: boolean; agents?: string[]; watching?: boolean };  // watching: a room the owner is in that this session hasn't joined, shown read-only

@@ -1103,6 +1103,7 @@ async function loadView($: $, roomId: string, pin?: boolean, name?: string): Pro
     who: plain(m.authorKind === 'agent' ? `@${m.authorName}` : m.authorName),
     mine: !!me && ((m.authorKind === 'user' && m.authorId === me) || (m.authorKind === 'agent' && m.ownerEmail === me)),
     system: m.authorKind === 'system' || undefined,
+    person: m.authorKind === 'user' || undefined,
     text: plain(m.text) + (m.attachments ?? []).map((f: any) => `\n📎 ${plain(f.name)}`).join(''),
     ts: Number(m.ts),
     reactions: m.reactions?.length ? reactionLine(m.reactions) : undefined,
@@ -1848,11 +1849,11 @@ export const register: Register = on => {
     const fit = (lines: string[], extra = 4, max = widest) => Math.min(max, Math.max(12, ...lines.map(l => cellWidth(l) + extra)))
     const mctx: MentionCtx = { agents: new Set(v?.agents ?? []) }
     const time = (ts: number) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
-    const bubble = (m: { id: string; who: string; mine: boolean; text: string; ts?: number; reactions?: string }, opts?: { waiting?: boolean }) => (
+    const bubble = (m: { id: string; who: string; mine: boolean; person?: boolean; text: string; ts?: number; reactions?: string }, opts?: { waiting?: boolean }) => (
       <Box key={m.id} flexDirection="column" alignItems={m.mine ? 'flex-end' : 'flex-start'} marginBottom={1}>
         <Text dimColor>{m.who}{m.ts ? ` · ${time(m.ts)}` : ''}{opts?.waiting ? ' · waiting for you' : ''}</Text>
         {(() => {
-          const blocks = parseMessage(plain(m.text) || ' ', mctx)
+          const blocks = parseMessage(plain(m.text) || ' ', { ...mctx, person: !!m.person })
           // a message with a table may take the pane's full width, so its columns fit
           const max = blocks.some(b => b.kind === 'table') ? cols : widest
           return (
@@ -1893,7 +1894,7 @@ export const register: Register = on => {
       const canAnswer = nonces.has(x.askId)
       return (
         <Box key={`ask-${x.askId}`} flexDirection="column" marginBottom={1}>
-          {bubble({ id: `askmsg-${x.askId}`, who: `${plain(x.requesterName)}${!v || v.roomId !== x.roomId ? ` · #${plain(x.roomName)}` : ''} asks your agent`, mine: false, text: x.requestText })}
+          {bubble({ id: `askmsg-${x.askId}`, who: `${plain(x.requesterName)}${!v || v.roomId !== x.roomId ? ` · #${plain(x.roomName)}` : ''} asks your agent`, mine: false, person: true, text: x.requestText })}
           <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
             <Text bold wrap="wrap">Your agent would: {plain(x.summary) || '(no summary)'}</Text>
             <Text dimColor wrap="wrap">Allow runs this as a task, with that summary as its brief; it works with this session's permissions and reports in the room. The room sees your answer.</Text>

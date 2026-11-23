@@ -31,7 +31,10 @@ export type Block =
 
 // Who is an agent: names seen as agent authors in the room, and handles that
 // end in -ai (the room's own naming rule). Everyone else mentioned is a person.
-export type MentionCtx = { agents: ReadonlySet<string> }
+// person: the message is a person's. People write the WhatsApp way, so *x* is
+// bold and ~x~ struck there (**x** and ~~x~~ still work); in an agent's
+// message *x* stays Markdown italic and a lone ~ is just a tilde. (0.18.6)
+export type MentionCtx = { agents: ReadonlySet<string>; person?: boolean }
 
 const URL_RE = /https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"*_`]/y
 const MENTION_RE = /@([A-Za-z0-9][\w-]*)(?::[\w.-]+)?/y
@@ -113,12 +116,20 @@ export function parseInline(src: string, ctx: MentionCtx, style: Omit<Span, 'tex
         flush(); out.push(...parseInline(src.slice(i + 2, end), ctx, { ...style, bold: true })); i = end + 2; continue
       }
     }
-    // *italic* / _italic_ (an underscore only at a word's edge: snake_case stays)
+    // a person's ~strike~ (WhatsApp), at a word's edge: ~5 min and ~/path stay
+    if (c === '~' && ctx.person && src[i + 1] !== ' ' && src[i + 1] !== '~' && !wordChar(src[i - 1])) {
+      const end = src.indexOf('~', i + 1)
+      if (end > i + 1 && src[end - 1] !== ' ' && !wordChar(src[end + 1])) {
+        flush(); out.push(...parseInline(src.slice(i + 1, end), ctx, { ...style, strike: true })); i = end + 1; continue
+      }
+    }
+    // *italic* / _italic_ (an underscore only at a word's edge: snake_case stays);
+    // a person's *x* is bold (WhatsApp)
     if ((c === '*' || c === '_') && src[i + 1] !== ' ' && src[i + 1] !== c && (c === '*' || !wordChar(src[i - 1]))) {
       let end = src.indexOf(c, i + 1)
       while (end > 0 && c === '_' && wordChar(src[end + 1])) end = src.indexOf(c, end + 1)
       if (end > i + 1 && src[end - 1] !== ' ') {
-        flush(); out.push(...parseInline(src.slice(i + 1, end), ctx, { ...style, italic: true })); i = end + 1; continue
+        flush(); out.push(...parseInline(src.slice(i + 1, end), ctx, { ...style, ...(c === '*' && ctx.person ? { bold: true } : { italic: true }) })); i = end + 1; continue
       }
     }
     buf += c

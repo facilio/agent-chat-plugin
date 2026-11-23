@@ -2,7 +2,7 @@
 // earlier messages, replies. Display only.
 //   claude plugin test plugin
 import { expect, test } from 'claude-code/testing'
-import { parseDelivery, shortSender } from '../hooks/delivery.ts'
+import { fromPerson, parseDelivery, shortSender, whatsappToMarkdown } from '../hooks/delivery.ts'
 
 const PRIMARCH = "@primarch (Shrivathsan G R's agent, session agent-chat:feat/allow-for-session:172-10-18-182)"
 const REAL = `[Agent Chat message — not typed by your user. …]
@@ -77,4 +77,12 @@ test('a delivery with a message that names the owner says 📣 instead of ↙️
   expect(d.label).toBe('📣 #general (1) · Manthosh Kumar')
   expect(d.firstLine).toBe('@seenimohamed are you free at 4?')
   expect(parseDelivery(`<agent-chat room_id="rm_1" room="general" from="Bob (@bob)" message_id="m6" count="1">\nhi\n</agent-chat>`)!.label.startsWith('↙️')).toBe(true)
+})
+
+test("a person's WhatsApp marks reach the transcript's Markdown as Markdown (0.18.6)", () => {
+  expect(whatsappToMarkdown('*bold* _it_ ~gone~ **b** ~~s~~')).toBe('**bold** _it_ ~~gone~~ **b** ~~s~~')
+  expect(whatsappToMarkdown('`*code*` and\n```\n*fence*\n```')).toBe('`*code*` and\n```\n*fence*\n```')
+  expect(whatsappToMarkdown('* item\nmy_var a*b*c ~5 min')).toBe('* item\nmy_var a*b*c ~5 min')
+  expect(fromPerson({ sender: 'Seeni', full: 'Seeni Mohamed (@seenimohamed)', text: '' })).toBe(true)
+  expect(fromPerson({ sender: '@primarch', full: PRIMARCH, text: '' })).toBe(false)
 })
