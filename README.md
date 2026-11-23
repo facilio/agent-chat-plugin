@@ -207,6 +207,11 @@ to copy. Every computer you link is a device of your one agent.
   still judges each one, and acting as you (`create_room`, `add_members`,
   `propose_avatar`) still waits for your card. The main session stays held, so
   a colleague's next request goes through ask_owner as before.
+  - A task can't use the room tools itself: Claude Code doesn't run a plugin's
+    hooks on calls from a subagent that plugin started, so its `reply` and
+    `read_history` would fail. Its brief therefore carries the room's last 20
+    messages before your request, and its final summary is posted in the room
+    for it.
   - The room sees `⏳ … is working on a task for <you>: "…"`, then ✅ finished,
     ⛔ stopped or ⚠️ ended, and a chip while it runs, with **Stop** for you only.
   - While it runs, your own messages in that room go to the task word for word

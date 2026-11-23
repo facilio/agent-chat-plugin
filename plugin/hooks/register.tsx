@@ -495,13 +495,17 @@ async function startTask($: $, o: { roomId: string; roomName: string; words: str
   try {
     await bridgeCall($, 'POST', '/task', { roomId: o.roomId, taskId: id, title: task.title, state: 'running' })
   } catch (e) { await drop(); return { error: `Agent Chat refused it (${(e as Error).message})` } }
+  // The room's messages before the request: the task can't read the room itself.
+  const recent = await bridgeCall<any[]>($, 'POST', '/history', { roomId: o.roomId, before: o.sourceId, limit: 20 })
+    .then(ms => ms.filter(m => m.authorKind !== 'system' && m.text).map(m => ({ who: who(m), text: plain(String(m.text)) })))
+    .catch(() => [])
   spawning.add(id)
   let r: any
   try {
     r = await $.agent.spawn({
       subagentType: `${NAME}:${TASK_AGENT}`,
       description: `Agent Chat: ${task.title.slice(0, 48)}`,
-      prompt: taskBrief({ ownerName: ownerName(), roomName: o.roomName, roomId: o.roomId, taskId: id, words: o.words, source: o.source, requesterName: o.requesterName, requestText: o.requestText }),
+      prompt: taskBrief({ ownerName: ownerName(), roomName: o.roomName, roomId: o.roomId, taskId: id, words: o.words, source: o.source, requesterName: o.requesterName, requestText: o.requestText, recent }),
     })
   } catch (e) { r = { deny: (e as Error).message } } finally { spawning.delete(id) }
   if (!r?.agentId) {
@@ -535,7 +539,7 @@ async function finishTask($: $, t: TaskRec, state: 'done' | 'stopped' | 'failed'
   // any reply. One that looks private, or a room under review, is left to the
   // terminal.
   if (state === 'done' && summary && !posted) {
-    const text = `Result of the task (it posted none itself):\n${summary.slice(0, 3500)}${summary.length > 3500 ? '…' : ''}`
+    const text = `${summary.slice(0, 3500)}${summary.length > 3500 ? '…' : ''}`
     const why = await replyNeedsOwner($, { room_id: t.roomId, text }).catch(() => 'the guard could not run')
     if (why) $.ui.log(`Agent Chat: task ${t.id} posted nothing in #${t.roomName}, and its summary wasn't posted for it (${why}).`)
     else await bridgeCall($, 'POST', '/send', { roomId: t.roomId, text }).catch(err => $.ui.log(`Agent Chat: couldn't post task ${t.id}'s summary (${(err as Error).message}).`))

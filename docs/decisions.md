@@ -6,6 +6,24 @@ earlier choices, the commit messages (`git log`) are the record.
 
 ---
 
+## 0.18.8 · Tasks get the room's recent messages; they don't call room tools
+- **Decided:** a task's brief carries the last 20 messages in the room before
+  the request (quoted as context, not instructions), and the task is told not
+  to call this plugin's tools. Its final summary is what the plugin posts in
+  the room, now without the "Result of the task (it posted none itself)" line.
+- **Why:** Claude Code leaves a plugin's hooks out of events the plugin itself
+  caused (its re-entry rule), and a task's subagent is started by this plugin,
+  so the task's calls to `reply` and `read_history` never reach the plugin and
+  fail with "no tool.call hook answered this call". Tasks asked to "check the
+  above things" couldn't see what "above" was.
+- **Not done:** making the room tools work inside tasks. Nothing in the plugin
+  API lets a plugin's own subagent reach its hooks.
+- **Open:** the same rule likely means the plugin's other `tool.call` checks
+  inside a task (the owner's private data still waiting for them, the stop and
+  time-limit refusals) don't run either; the session's normal permissions
+  still apply. To confirm with `claude --debug` on a task.
+- **Who:** Manthosh.
+
 ## 0.18.7 · The agent can see what's waiting for its owner
 - **Decided:** a `pending_approvals` tool lists what waits for the owner's OK
   from any of the agent's sessions: held tool calls (the card's one-line
