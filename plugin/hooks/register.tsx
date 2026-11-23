@@ -1820,7 +1820,8 @@ export const register: Register = on => {
           const v = bridge && lastStatus?.state === 'online'
             ? await holdForOwner($, e, next, {
               roomId: String(input.room_id ?? ''),
-              post: text,
+              // what the terminal pane shows as the post: the pictures too
+              post: pics.length ? `${text}\n\n${pics.map(p => `📎 ${picLabel(p)}`).join('\n')}` : text,
               description: `Post in #${room ?? 'room'}${picLine}: "${text.replace(/\s+/g, ' ').slice(0, 140)}${text.length > 140 ? '…' : ''}" (held because ${why})`,
               preview: pics.length ? `${text}\n\nPictures:\n${pics.map(p => `- ${picLabel(p)}`).join('\n')}` : text,
               webOnlyOk: true,
@@ -1834,7 +1835,8 @@ export const register: Register = on => {
           if (v.decision !== 'allow') { pictures.delete(String((e as any).tool_use_id ?? '')); return { deny: v.reason ?? 'Not posted.' } }
         }
       }
-      const result = await runTool($, name, e)
+      // A reply posts exactly what the guard judged (room, text, pictures).
+      const result = await runTool($, name, name === 'reply' ? { ...((e as any).input ?? e), tool_use_id: (e as any).tool_use_id } : e)
       // A task got something into the room: it won't need its summary posted for it.
       if (name === 'reply' && e.agentId) {
         const t = await taskForAgent($, e.agentId)
