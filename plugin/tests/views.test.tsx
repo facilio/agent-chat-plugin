@@ -527,7 +527,7 @@ test("reply attaches pictures: private places and non-pictures are refused; an o
   expect(text(sent)).toContain('sent')
   expect(calls.find(c => c.path === '/upload')?.body).toEqual({ roomId: 'rm_1', token: 'tok1' })
   expect(calls.find(c => c.path === '/send')?.body).toEqual({ roomId: 'rm_1', text: 'here', attachments: ['f_AAAAAAAAAAAAAAAA'] })
-  // a turn a colleague started: held for the owner, never uploaded unasked
+  // a turn a colleague started: held for the owner; offline here, so nothing is uploaded or sent
   calls.length = 0
   st.seed('chat', chatValue({ tainted: true }))
   const held = text(await reply(['shot.png']))
