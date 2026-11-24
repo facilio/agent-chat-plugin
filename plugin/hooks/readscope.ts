@@ -67,6 +67,13 @@ export function readPaths(tool: string, input: Record<string, unknown>, root: st
   return out
 }
 
+// Where Claude Code keeps the pictures a person pastes into it. A picture from
+// here may be posted, but only after the owner sees it (0.18.10); the rest of
+// ~/.claude stays private.
+export function isPasted(p: string, home: string): boolean {
+  return within(p, `${home}/.claude/uploads`)
+}
+
 export function isPrivate(p: string, home: string): boolean {
   return PRIVATE_HOME.some((d) => within(p, `${home}/${d}`)) || SECRET_NAME.test(p)
 }

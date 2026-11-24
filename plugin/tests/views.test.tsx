@@ -191,10 +191,14 @@ test('a pane message draws bold italic, strikethrough and a table as columns; a 
 // pane view never joins: a room of the owner's this session hasn't joined shows
 // read-only; joining is /agent-chat join's.
 // A fake bridge: the process says ready, and its HTTP answers are canned.
-function fakeBridge(on: any) {
+// online: the bridge says it's connected, so a held call can put a card up
+function fakeBridge(on: any, o: { online?: boolean } = {}) {
   const calls: { method: string; path: string; body: any }[] = []
   const history: any[] = [{ id: 'm1', authorKind: 'user', authorName: 'Manthosh Kumar', authorId: 'manthosh@example.com', text: 'hello', ts: 1 }]
-  on('process.spawn', async function* () { yield { stream: 'stdout', text: JSON.stringify({ type: 'ready' }) + '\n' }; await new Promise(() => {}) } as any)
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout', text: JSON.stringify({ type: 'ready' }) + '\n' + (o.online ? JSON.stringify({ type: 'status', state: 'online', me: { name: 'caraxes', ownerEmail: 'seenimohamed@example.com' } }) + '\n' : '') }
+    await new Promise(() => {})
+  } as any)
   on('http.fetch', (_: any, e: any) => {
     const path = new URL(e.url).pathname
     const method = e.init?.method ?? 'GET'
@@ -211,9 +215,12 @@ function fakeBridge(on: any) {
       : path === '/history' ? history.slice(-(body?.limit ?? 40))
       : path === '/inspect_file' ? (
           body.path === '/Users/me/work/app/shot.png' ? { path: body.path, real: body.path, type: 'image/png', size: 2048, width: 800, height: 600, token: 'tok1' }
+          : body.path.startsWith('/Users/me/.claude/uploads/') ? { path: body.path, real: body.path, type: 'image/png', size: 4096, width: 1200, height: 800, token: 'tok2' }
+          : body.path === '/Users/me/work/app/paste-link.png' ? { path: body.path, real: '/Users/me/.claude/uploads/s1/a-image.png', type: 'image/png', size: 4096, token: 'tok3' }
           : body.path === '/Users/me/work/app/link.png' ? { path: body.path, real: '/Users/me/.ssh/id_ed25519', size: 400, type: null }
           : { path: body.path, real: body.path, size: 30, type: null })
       : path === '/upload' ? { fileId: 'f_AAAAAAAAAAAAAAAA' }
+      : path === '/permission/wait' ? { behavior: (calls as any).verdict ?? null }
       : path === '/send' ? { id: 'm2', capped: false }
       : path === '/approvals' ? { tools: [{ requestId: 'abcde', session: 'official:home-rene', toolName: 'Bash', description: 'Update a memory note', createdAt: 1, expiresAt: Date.now() + 7 * 60_000 }], asks: [] }
       : {}
@@ -526,4 +533,31 @@ test("reply attaches pictures: private places and non-pictures are refused; an o
   const held = text(await reply(['shot.png']))
   expect(held).toContain("attaches pictures")
   expect(calls.filter(c => c.path === '/upload' || c.path === '/send')).toHaveLength(0)
+})
+
+test("a picture pasted into Claude Code (~/.claude/uploads) waits for the owner even on their own turn, and its card gets the uploaded picture; the rest of ~/.claude is still refused (0.18.10)", async ($, on) => {
+  const st = engine(on)
+  st.seed('chat', chatValue({}))
+  const calls = fakeBridge(on, { online: true })
+  const text = (r: any) => JSON.stringify(r)
+  const reply = (files: string[]) => $.tool.call({ tool: 'mcp__agent-chat__reply', room_id: 'rm_1', text: 'this one', files } as any)
+  // the rest of ~/.claude: refused before anything is read
+  expect(text(await reply(['~/.claude/channels/agent-chat/attachments/x.png']))).toContain('private place')
+  expect(calls.filter(c => c.path === '/inspect_file')).toHaveLength(0)
+  // the owner's own turn, a pasted picture: uploaded for the card, held, and denied
+  ;(calls as any).verdict = 'deny'
+  const denied = text(await reply(['~/.claude/uploads/s1/a-image.png']))
+  expect(denied).toContain('declined')
+  expect(calls.find(c => c.path === '/upload')?.body).toEqual({ roomId: 'rm_1', token: 'tok2' })
+  const perm = calls.find(c => c.path === '/permission')?.body
+  expect(perm.roomId).toBe('rm_1')
+  expect(perm.files).toEqual(['f_AAAAAAAAAAAAAAAA'])
+  expect(perm.description).toContain('pasted into Claude Code')
+  expect(calls.filter(c => c.path === '/send')).toHaveLength(0)
+  // allowed: the reply posts that same upload; nothing is uploaded twice
+  calls.length = 0
+  ;(calls as any).verdict = 'allow'
+  expect(text(await reply(['/Users/me/work/app/paste-link.png']))).toContain('sent')
+  expect(calls.filter(c => c.path === '/upload')).toHaveLength(1)
+  expect(calls.find(c => c.path === '/send')?.body).toEqual({ roomId: 'rm_1', text: 'this one', attachments: ['f_AAAAAAAAAAAAAAAA'] })
 })

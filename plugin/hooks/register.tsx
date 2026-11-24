@@ -25,7 +25,7 @@ import { privateDetails } from './privacy.ts'
 import { inert } from './inert.ts'
 import { cellWidth, parseMessage, tableLines, visibleLines, type Block, type MentionCtx, type Span } from './paneMarkdown.ts'
 import { GRANT_MS, OWNER_ACTS, READ_TOOLS, RELAYED, coveredBy, grantLabel, holdsOnTaintedTurn, liveGrants, personLabel, relayedLabel, timeLeft, toolArgs, turnPeople, withGrant } from './hold.ts'
-import { heldTurnRead, isPrivate, normalize, taskPrivateAccess } from './readscope.ts'
+import { heldTurnRead, isPasted, isPrivate, normalize, taskPrivateAccess } from './readscope.ts'
 import { marketplaceInstall, updateCommands } from './install.ts'
 import { SOURCE_FRESH_MS, TASK_AGENT, TASK_MAX_MS, cannotStart, isStopWord, newTaskId, steerText, taskBrief, taskOf, taskSystem, taskTitle } from './tasks.ts'
 
@@ -722,7 +722,7 @@ Room messages arrive as prompts from the ${NAME} plugin, wrapped in <agent-chat 
 
 How to respond:
 - Answer with the ${T('reply')} tool (it is registered by this plugin; if you don't see it, use ToolSearch for "${NAME} reply"), using the room_id from the tag. Your terminal output is NOT seen in the room; only reply is. When a room message arrives in the middle of your own work, answer it and then carry on with what you were doing.
-- To show the room a picture (a screenshot, chart or diagram you made), pass its full path in files on ${T('reply')}: PNG, JPEG, GIF or WebP only. Only what the room should see: a picture can show anything that was on screen. Pictures go out unasked only on a turn your owner alone started; otherwise your owner approves them first. Files from private places (keys, credentials, Claude's own files) are refused.
+- To show the room a picture (a screenshot, chart or diagram you made), pass its full path in files on ${T('reply')}: PNG, JPEG, GIF or WebP only. Only what the room should see: a picture can show anything that was on screen. Pictures go out unasked only on a turn your owner alone started; otherwise your owner approves them first. A picture your owner pasted into Claude Code (under ~/.claude/uploads) may be attached, and always waits for your owner to see it first. Files from other private places (keys, credentials, Claude's own files) are refused.
 - Keep replies chat-sized. Summarise; don't paste huge outputs. For code reviews, point at files/lines and diffs by path; colleagues' agents have their own checkouts.
 - When addressed="true", answer. When addressed="false", reply only if you have something genuinely useful that nobody else has covered. Otherwise stay silent: do NOT call reply. Never reply just to acknowledge or agree: react to the message instead (${T('react')}, e.g. 👍 or ✅), or do nothing.
 - To address another agent, @mention it. The room pauses agents after a run of agent-only messages, so don't keep an agent back-and-forth going for its own sake.
@@ -844,6 +844,15 @@ const OWNER_ACTIONS = new Set(['create_room', 'add_members'])
 
 const who = (m: any) => m.authorKind === 'agent' ? `${m.authorName} (${m.ownerName}'s agent${m.session ? `, ${m.session}` : ''})` : m.authorName
 
+// Upload one checked picture (the bytes the bridge read) into a room's storage.
+async function uploadPicture($: $, roomId: string, p: Picture): Promise<string> {
+  const up = await bridgeCall<{ fileId: string }>($, 'POST', '/upload', { roomId, token: p.token }).catch(err => {
+    if ((err as { code?: string }).code === 'unknown_action') throw new Error('The Agent Chat server is too old to take pictures from agents; nothing was posted. Post without files, or tell your owner.')
+    throw new Error(`Couldn't upload ${p.path} (${(err as Error).message}); nothing was posted.`)
+  })
+  return up.fileId
+}
+
 async function runTool($: $, name: string, args: any): Promise<string> {
   switch (name) {
     case 'reply': {
@@ -853,13 +862,8 @@ async function runTool($: $, name: string, args: any): Promise<string> {
       pictures.delete(key)
       if (Array.isArray(args.files) && args.files.length && !pics.length) throw new Error('The pictures were not checked, so nothing was posted. Try again.')
       const attachments: string[] = []
-      for (const p of pics) {
-        const up = await bridgeCall<{ fileId: string }>($, 'POST', '/upload', { roomId: String(args.room_id), token: p.token }).catch(err => {
-          if ((err as { code?: string }).code === 'unknown_action') throw new Error('The Agent Chat server is too old to take pictures from agents; nothing was posted. Post without files, or tell your owner.')
-          throw new Error(`Couldn't upload ${p.path} (${(err as Error).message}); nothing was posted.`)
-        })
-        attachments.push(up.fileId)
-      }
+      // a held picture was uploaded for its card already: post that upload
+      for (const p of pics) attachments.push(p.fileId ?? await uploadPicture($, String(args.room_id), p))
       const r = await bridgeCall($, 'POST', '/send', { roomId: String(args.room_id), text: String(args.text ?? ''), ...(args.reply_to ? { replyTo: String(args.reply_to) } : {}), ...(attachments.length ? { attachments } : {}) })
         .catch(err => {
           // The bridge answers within its own deadline; if the call still gave
@@ -975,31 +979,39 @@ async function reviewRooms($: $): Promise<string[]> {
 // The bridge resolves each path (symlinks followed), checks the bytes are a
 // picture, and keeps what it read under a token; the reply uploads exactly
 // those bytes. Keyed by the reply's tool_use_id, from the guard to runTool.
-type Picture = { path: string; real: string; type: string; size: number; width?: number; height?: number; token: string }
+// pasted: from ~/.claude/uploads (pasted into Claude Code), so it always waits
+// for the owner. fileId: uploaded already, for the owner's card to show.
+type Picture = { path: string; real: string; type: string; size: number; width?: number; height?: number; token: string; pasted?: boolean; fileId?: string }
 const pictures = new Map<string, Picture[]>()
 const kb = (n: number) => n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`
-const picLabel = (p: Picture) => `${p.real}, ${p.width && p.height ? `${p.width}×${p.height}, ` : ''}${kb(p.size)}`
+const picLabel = (p: Picture) => `${p.real}, ${p.width && p.height ? `${p.width}×${p.height}, ` : ''}${kb(p.size)}${p.pasted ? ', pasted into Claude Code' : ''}`
 async function vetPictures($: $, paths: string[]): Promise<Picture[] | string> {
   if (paths.length > MAX_FILES_PER_MESSAGE) return `Not posted: at most ${MAX_FILES_PER_MESSAGE} pictures per message.`
   const { root, home } = await whereAmI($)
   const out: Picture[] = []
   for (const given of paths) {
     const abs = normalize(given, root, home)
-    const priv = `Not posted: ${given} is in a private place (keys, credentials, Claude's own files, secret-looking names). Pictures from there never go to a room.`
-    if (isPrivate(abs, home)) return priv
+    const priv = `Not posted: ${given} is in a private place (keys, credentials, Claude's own files, secret-looking names). Pictures from there never go to a room (only pictures pasted into Claude Code may, with your owner's OK).`
+    // ~/.claude/uploads (pictures pasted into Claude Code) is the one private
+    // place a picture may come from, judged on where the path really leads.
+    if (isPrivate(abs, home) && !isPasted(abs, home)) return priv
     const f = await bridgeCall<any>($, 'POST', '/inspect_file', { path: abs }).catch(err => ({ error: (err as Error).message }))
     if (f.error) return `Not posted: ${f.error}`
-    if (isPrivate(String(f.real), home)) return priv.replace(given, `${given} (it leads to ${f.real})`)
+    const real = String(f.real)
+    if (isPrivate(real, home) && !isPasted(real, home)) return priv.replace(given, `${given} (it leads to ${f.real})`)
     if (!f.type || !f.token) return `Not posted: ${given} isn't a PNG, JPEG, GIF or WebP picture. Agents can attach pictures only.`
-    out.push({ path: given, real: String(f.real), type: f.type, size: f.size, width: f.width, height: f.height, token: f.token })
+    out.push({ path: given, real, type: f.type, size: f.size, width: f.width, height: f.height, token: f.token, ...(isPasted(real, home) ? { pasted: true } : {}) })
   }
   return out
 }
 
-async function replyNeedsOwner($: $, input: any, agentId?: string, files = false): Promise<string | null> {
+async function replyNeedsOwner($: $, input: any, agentId?: string, files = false, pasted = false): Promise<string | null> {
   const roomId = String(input?.room_id ?? '')
   const review = await reviewRooms($)
   if (review.includes('*') || review.includes(roomId)) return 'every reply in this room waits for you (/agent-chat review)'
+  // A picture pasted into Claude Code waits for the owner to see it, on any
+  // turn, the owner's own included (Manthosh, 0.18.10).
+  if (pasted) return 'it attaches a picture pasted into Claude Code'
   // The owner asked for this (typed it here, or wrote it in a room) and the
   // turn has read nothing anyone else wrote (no colleague's message came with
   // it, no read_history or attachment brought one in): it posts without asking
@@ -1037,12 +1049,12 @@ const startedByGranted = (s: ChatState) => coveredBy(s.grantedPeople, s.turnFrom
 // "Allow messages to my sessions for 1 hour": SendMessage on a held turn goes out unasked
 const sendGranted = (s: ChatState) => (s.sendUntil ?? 0) > Date.now()
 const SEND_GRANT = 'messages to your other sessions'
-async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict; grantTo?: string; roomId?: string; post?: string }): Promise<any> {
+async function holdForOwner($: $, e: any, next: any, o: { description: string; preview: string; webOnlyOk: boolean; onTerminal: Verdict; onTimeout: Verdict; onDeny: Verdict; grantTo?: string; roomId?: string; post?: string; files?: string[] }): Promise<any> {
   const ids = 'abcdefghijkmnopqrstuvwxyz'
   const requestId = [...crypto.getRandomValues(new Uint8Array(5))].map(x => ids[x % ids.length]).join('')
   const nonce = rand(16)
   try {
-    await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description: o.description, inputPreview: o.preview.slice(0, 4000), nonceHash: await sha256(nonce), ...(o.grantTo ? { grantTo: o.grantTo } : {}) })
+    await bridgeCall($, 'POST', '/permission', { requestId, toolName: e.tool, description: o.description, inputPreview: o.preview.slice(0, 4000), nonceHash: await sha256(nonce), ...(o.grantTo ? { grantTo: o.grantTo } : {}), ...(o.files?.length && o.roomId ? { roomId: o.roomId, files: o.files } : {}) })
   } catch { return o.onTerminal }
   nonces.set(requestId, nonce)
   const roomId = o.roomId || [...workingRooms][0] || (await read($, chat)).joined[0]
@@ -1811,8 +1823,18 @@ export const register: Register = on => {
           pics = v
           pictures.set(String((e as any).tool_use_id ?? ''), pics)
         }
-        const why = await replyNeedsOwner($, input, e.agentId, pics.length > 0)
+        const why = await replyNeedsOwner($, input, e.agentId, pics.length > 0, pics.some(p => p.pasted))
         if (why) {
+          // Held pictures go up first, to storage only, so the owner's web
+          // card can show them. They're in no message; the server deletes
+          // them unless the owner allows. Allowed, the reply posts these same
+          // uploads.
+          if (bridge && lastStatus?.state === 'online') for (const p of pics) {
+            try { p.fileId = await uploadPicture($, String(input.room_id ?? ''), p) } catch (err) {
+              pictures.delete(String((e as any).tool_use_id ?? ''))
+              return { deny: (err as Error).message }
+            }
+          }
           const text = String(input.text ?? '')
           const room = (await read($, chat)).roomNames[String(input.room_id ?? '')]
           const notPosted = (reason: string) => ({ decision: 'deny' as const, reason })
@@ -1820,6 +1842,7 @@ export const register: Register = on => {
           const v = bridge && lastStatus?.state === 'online'
             ? await holdForOwner($, e, next, {
               roomId: String(input.room_id ?? ''),
+              files: pics.map(p => p.fileId!).filter(Boolean),
               // what the terminal pane shows as the post: the pictures too
               post: pics.length ? `${text}\n\n${pics.map(p => `📎 ${picLabel(p)}`).join('\n')}` : text,
               description: `Post in #${room ?? 'room'}${picLine}: "${text.replace(/\s+/g, ' ').slice(0, 140)}${text.length > 140 ? '…' : ''}" (held because ${why})`,

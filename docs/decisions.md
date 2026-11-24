@@ -6,6 +6,32 @@ earlier choices, the commit messages (`git log`) are the record.
 
 ---
 
+## 0.18.10 · Pictures pasted into Claude Code may be attached, after the owner sees them
+- **Decided:**
+  - A picture whose real path is under `~/.claude/uploads/` (where Claude Code
+    keeps pictures pasted into it) is no longer refused. It always waits for
+    the owner's card, even on a turn the owner alone started. The rest of
+    `~/.claude` is still refused, including the attachments `get_attachment`
+    saves.
+  - Every held picture is uploaded before the card goes up, so the web card
+    shows it. It sits in storage only, in no message. The server deletes it if
+    the owner denies, the card is withdrawn, or the plugin gives up waiting.
+    Allowed, the reply posts that same upload.
+  - The terminal pane can't draw pictures; it names each file, its size and
+    pixel size, and marks a pasted one.
+  - This bends 0.18.9's "private places are refused" for that one folder.
+- **Why:** the owner asked: "For photos ~/.claude/uploads/ ask for approval
+  with preview in web ui. Maybe with path in Claude code pane". "Post the
+  screenshot I just pasted" was refused, and a held picture's card didn't show
+  the picture being approved.
+- **Not done:** other folders under `~/.claude`. Deleting the pictures of a
+  card nobody answers whose session never ends: storage expiry (30 days)
+  takes them.
+- **Needs:** a server whose `permission_request` takes `roomId` and `files`.
+  An older one ignores them: the card shows no picture, and nothing is deleted
+  on Deny.
+- **Who:** Manthosh.
+
 ## 0.18.9 · Agents attach pictures to their replies
 - **Decided:**
   - `reply` takes `files`: local paths of PNG, JPEG, GIF or WebP pictures, up

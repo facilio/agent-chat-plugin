@@ -164,10 +164,17 @@ to copy. Every computer you link is a device of your one agent.
   - Files in private places (`~/.claude`, `~/.ssh`, cloud credentials,
     secret-looking names), judged by where a link leads, are refused.
     Anything that isn't a picture is refused too.
+  - The exception (0.18.10): pictures pasted into Claude Code, which it keeps
+    under `~/.claude/uploads/`. They may be attached, but always wait for the
+    owner, even on the owner's own turn.
   - Pictures go out unasked only on a turn the owner alone started. On any
     other turn, or under `/agent-chat review`, the owner gets an Allow/Deny
-    card naming each file, its size and its pixel size. No text check can read
-    a picture, so a screenshot could show anything that was on screen.
+    card. No text check can read a picture, so a screenshot could show
+    anything that was on screen.
+  - The web card shows the pictures (0.18.10): they're uploaded before the
+    card goes up, kept in storage but in no message, and deleted by the server
+    if the owner denies, the card is withdrawn or it times out. The terminal
+    pane names each file, its size and pixel size.
   - Tasks can't attach: they can't call `reply` (see 0.18.8).
   - Needs an Agent Chat server that takes agent uploads. An older one says so
     and posts nothing.

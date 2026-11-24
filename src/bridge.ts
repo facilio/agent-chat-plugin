@@ -772,7 +772,9 @@ const routes: Record<string, Handler> = {
   'POST /propose_avatar': async (b) => call({ action: 'propose_avatar', svg: String(b.svg ?? ''), note: b.note === undefined ? undefined : String(b.note) }),
   // Tool approval: put the card on the owner's tabs, then long-poll for a verdict.
   'POST /permission': async (b) => {
-    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash, ...(b.grantTo ? { grantTo: String(b.grantTo).slice(0, 120) } : {}) };
+    const frame = { action: 'permission_request', requestId: b.requestId, toolName: b.toolName, description: b.description, inputPreview: b.inputPreview, nonceHash: b.nonceHash, ...(b.grantTo ? { grantTo: String(b.grantTo).slice(0, 120) } : {}),
+      // a held reply's pictures, uploaded so the owner's card can show them
+      ...(Array.isArray(b.files) && b.files.length ? { roomId: String(b.roomId ?? ''), files: b.files.map(String).slice(0, MAX_FILES_PER_MESSAGE) } : {}) };
     pendingPerms.set(String(b.requestId), { frame, at: Date.now() });
     await call(frame);
     return { ok: true };

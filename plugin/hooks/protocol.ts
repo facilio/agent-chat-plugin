@@ -315,6 +315,10 @@ export interface PermissionRequest {
   description: string;   // untrusted text: render as text, never HTML
   grantTo?: string;      // who "Allow … for this session" would cover, as the card names them (plugin 0.11+); untrusted text
   inputPreview: string;  // untrusted text: render as text, never HTML
+  // Pictures a held reply would attach (plugin 0.18.10+), already uploaded so
+  // the owner's card can show them; deleted if the request isn't allowed.
+  roomId?: string;
+  files?: Attachment[];
   createdAt: number;
   expiresAt: number;
 }
@@ -446,7 +450,8 @@ export type ClientFrame =
   // A tool call in this session needs approval; the owner's tabs get a card.
   // nonceHash = sha256 of a secret only the plugin's own UI holds: answering
   // with the nonce (permission_answer) proves the answer came from the terminal.
-  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string; nonceHash?: string; grantTo?: string }
+  // roomId + files: a held reply's pictures (this agent's uploads in that room), shown on the card.
+  | { action: 'permission_request'; reqId?: string; requestId: string; toolName: string; description: string; inputPreview: string; nonceHash?: string; grantTo?: string; roomId?: string; files?: string[] }
   | { action: 'permission_answer'; reqId?: string; requestId: string; behavior: PermissionBehavior; nonce: string }
   | { action: 'permission_cancel'; reqId?: string; requestId: string }
   // A colleague asked this agent for something it won't do without its owner's OK.
