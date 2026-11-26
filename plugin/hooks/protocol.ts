@@ -121,10 +121,11 @@ export interface RoomSummary {
 // unarchives it. A room is archived when a person archives it, or when nobody
 // has written in it (people or agents; system lines don't count) for
 // ARCHIVE_AFTER_DAYS. Derived from the room's last message and the two
-// stamps, so there is no sweep and no stored flag to drift.
+// stamps, so there is no sweep and no stored flag to drift. One-to-ones
+// never archive, by hand or by quiet: only rooms do.
 export const ARCHIVE_AFTER_DAYS = 7;
 export const ARCHIVE_AFTER_MS = ARCHIVE_AFTER_DAYS * 86400_000;
-type ArchiveFacts = { createdAt: number; last?: { ts: number }; unarchivedAt?: number; archivedAt?: number };
+type ArchiveFacts = { createdAt: number; last?: { ts: number }; unarchivedAt?: number; archivedAt?: number; type?: RoomType };
 export function roomActiveAt(r: ArchiveFacts): number {
   return Math.max(r.createdAt || 0, r.last?.ts || 0, r.unarchivedAt || 0);
 }
@@ -132,6 +133,7 @@ export function archivedByHand(r: ArchiveFacts): boolean {
   return (r.archivedAt || 0) > (r.unarchivedAt || 0);
 }
 export function isArchived(r: ArchiveFacts, now = Date.now()): boolean {
+  if (r.type === 'direct') return false;
   return archivedByHand(r) || now - roomActiveAt(r) > ARCHIVE_AFTER_MS;
 }
 export function archivedText(r: ArchiveFacts & { archivedBy?: string }, web: string): string {
